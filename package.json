@@ -1,0 +1,12 @@
+{
+  "name": "nmkr-midnight-paywindow",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "NMKR Midnight Paywindow — single-shot mint window opened via ?id=<paywindowId>",
+  "scripts": {
+    "start": "node server/server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
