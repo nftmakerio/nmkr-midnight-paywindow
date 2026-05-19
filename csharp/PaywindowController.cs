@@ -87,7 +87,6 @@ public class PaywindowEntity
     public string Image { get; set; } = "";
     public string MediaType { get; set; } = "";
     public string Description { get; set; } = "";
-    public Dictionary<string, object>? Attributes { get; set; }
     public decimal PriceNight { get; set; }
     public List<PaywindowRecipient> Recipients { get; set; } = new();
 
@@ -103,7 +102,6 @@ public class PaywindowEntity
             Image = Image,
             MediaType = MediaType,
             Description = Description,
-            Attributes = Attributes,
         },
         Payment = Recipients.Count == 0 ? null : new PaywindowPayment
         {

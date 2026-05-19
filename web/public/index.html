@@ -102,19 +102,17 @@
     }
     .reveal-card h2 { margin: 0 0 .25rem 0; font-size: 1.2rem; }
     .reveal-card .sub { font-size: .85rem; color: #666; margin-bottom: .75rem; word-break: break-all; }
-    .meta {
-      margin-top: 1rem;
-      background: #f3f7f4;
-      border-radius: 10px;
-      padding: .9rem;
-      font-family: ui-monospace, SF Mono, Menlo, monospace;
-      font-size: .8rem;
-      color: #1f3a2a;
-      white-space: pre-wrap;
+    .reveal-card .desc { font-size: .9rem; color: #333; margin: .75rem 0; line-height: 1.45; }
+    .reveal-card .meta-link {
+      display: inline-block;
+      margin-top: .5rem;
+      color: #0d4d2a;
+      font-weight: 600;
+      text-decoration: none;
+      font-size: .9rem;
       word-break: break-all;
-      display: none;
     }
-    .meta.show { display: block; }
+    .reveal-card .meta-link:hover { text-decoration: underline; }
     .footer {
       margin-top: 1.5rem;
       font-size: .75rem;
@@ -136,8 +134,8 @@
         <img id="nftImage" alt="">
         <h2 id="nftName"></h2>
         <div class="sub">Token #<span id="nftTokenId"></span> · <code id="nftContract"></code></div>
-        <button id="showMetaBtn" class="btn secondary" style="color:#0d4d2a; border-color:#0d4d2a;">Show metadata</button>
-        <pre id="nftMeta" class="meta"></pre>
+        <p id="nftDesc" class="desc"></p>
+        <a id="nftUri" class="meta-link" href="#" target="_blank" rel="noopener noreferrer">View full metadata →</a>
       </div>
     </div>
 

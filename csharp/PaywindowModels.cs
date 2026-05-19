@@ -15,6 +15,10 @@
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
+// Note: rich per-NFT attributes (rarity, edition, properties, …) belong
+// in the off-chain metadata JSON pointed to by Nft.Uri. The paywindow
+// reveal shows the URI as a link so the user can inspect them.
+
 namespace Nmkr.Midnight.Paywindow.Models;
 
 /// <summary>
@@ -72,13 +76,6 @@ public class PaywindowNft
     /// <summary>Description — revealed only after a successful mint.</summary>
     [JsonPropertyName("description")]
     public string Description { get; set; } = "";
-
-    /// <summary>
-    /// Arbitrary extra metadata (rarity, edition, properties, …).
-    /// Shown when the user clicks the metadata reveal button.
-    /// </summary>
-    [JsonPropertyName("attributes")]
-    public Dictionary<string, object>? Attributes { get; set; }
 }
 
 public class PaywindowPayment

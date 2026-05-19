@@ -107,7 +107,6 @@ async function fetchPaywindow(id) {
         image: 'https://studio.nmkr.io/images/nmkr-studio-logo.svg',
         mediaType: 'image/svg+xml',
         description: 'Demo NFT minted from the NMKR Paywindow.',
-        attributes: { rarity: 'demo', edition: 1 },
       },
       payment: {
         priceNight: MOCK_PRICE_NIGHT,
@@ -241,7 +240,6 @@ app.post('/api/reveal-metadata', async (req, res) => {
       uri: pw.nft.uri,
       mediaType: pw.nft.mediaType,
       description: pw.nft.description,
-      attributes: pw.nft.attributes ?? {},
     });
   } catch (err) { sendError(res, err); }
 });

@@ -153,12 +153,13 @@ async function revealNft(built) {
   $('nftName').textContent = meta.name;
   $('nftTokenId').textContent = built.tokenId ?? '?';
   $('nftContract').textContent = (built.contractAddress || '').slice(0, 20) + '…';
-  $('nftMeta').textContent = JSON.stringify({
-    uri: meta.uri,
-    mediaType: meta.mediaType,
-    description: meta.description,
-    attributes: meta.attributes,
-  }, null, 2);
+  $('nftDesc').textContent = meta.description || '';
+  if (meta.uri) {
+    $('nftUri').href = meta.uri;
+    $('nftUri').style.display = '';
+  } else {
+    $('nftUri').style.display = 'none';
+  }
 
   $('mintBtn').style.display = 'none';
   setStatus('');
@@ -166,11 +167,6 @@ async function revealNft(built) {
 }
 
 $('mintBtn').addEventListener('click', mint);
-$('showMetaBtn').addEventListener('click', () => {
-  const el = $('nftMeta');
-  el.classList.toggle('show');
-  $('showMetaBtn').textContent = el.classList.contains('show') ? 'Hide metadata' : 'Show metadata';
-});
 
 window.addEventListener('DOMContentLoaded', () => {
   // Run both in parallel — the button only unlocks when both succeed.

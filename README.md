@@ -9,8 +9,8 @@ https://midnight-paywindow.nmkr.io/?id=<paywindowId>
 
 The window auto-connects to a Midnight wallet (e.g. 1AM), builds an atomic
 mint transaction on the server, has the wallet balance and submit it, and
-then reveals the minted NFT (image + name first, full metadata on a
-follow-up click).
+then reveals the minted NFT (image, name, description, and a link to
+the off-chain metadata JSON).
 
 ---
 
@@ -181,8 +181,10 @@ requires a separate wallet confirmation).
 Body: `{ "id": "12345" }`
 
 Called only after the mint tx has been submitted. Returns the NFT's
-full metadata (description, attributes, …) — kept on the server until
-this point so the user cannot inspect it before paying.
+name, image, description, mediaType, and URI — kept on the server
+until this point so the user cannot inspect them before paying. The
+URI is shown as a clickable link in the reveal card; rich attributes
+(rarity, edition, …) live in the JSON document at that URI.
 
 ---
 
@@ -210,8 +212,7 @@ Example response:
     "uri":  "https://nmkr.io/meta/12345.json",
     "image": "https://nmkr.io/img/12345.png",
     "mediaType": "image/png",
-    "description": "Shown after the reveal.",
-    "attributes": { "rarity": "rare", "edition": 7 }
+    "description": "Shown after the reveal."
   },
   "payment": {
     "priceNight": 2,
