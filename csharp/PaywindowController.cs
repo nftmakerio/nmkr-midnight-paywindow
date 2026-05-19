@@ -1,12 +1,12 @@
 // ============================================================
-// Beispiel-Controller fuer NMKR Studio.
-// Der Bridge-Server schickt:
+// Sample controller for NMKR Studio.
+// The bridge server calls:
 //   GET /paywindow/{id}
 //   Authorization: Bearer <api-key>
-// und erwartet PaywindowData als JSON.
+// and expects PaywindowData as JSON.
 //
-// Diese Datei ist ein Geruest — die Lookup-Logik (DB-Abfrage,
-// Status-Checks, Auth) musst du noch fuellen.
+// This file is a skeleton — the lookup logic (DB access, status
+// checks, auth) is left for you to fill in.
 // ============================================================
 
 using Microsoft.AspNetCore.Mvc;
@@ -26,15 +26,15 @@ public class PaywindowController : ControllerBase
     }
 
     /// <summary>
-    /// Liefert die zum Minten benoetigten Daten zu einer Paywindow-Id.
-    /// MUSS authentifiziert sein (nur fuer den Bridge-Server zugaenglich) —
-    /// die Response enthaelt den OwnerSeed.
+    /// Returns the data required to mint for a given paywindow id.
+    /// MUST be authenticated (bridge-server only) — the response
+    /// contains the OwnerSeed.
     /// </summary>
     [HttpGet("{id}")]
     public async Task<ActionResult<PaywindowData>> Get(string id)
     {
-        // TODO: API-Key / Bearer-Token gegen Allowlist pruefen
-        //       (Authorization-Header), z.B. via Attribute oder Middleware.
+        // TODO: validate the API key / bearer token against an allowlist
+        //       (Authorization header), e.g. via an attribute or middleware.
 
         var data = await _service.GetByIdAsync(id);
         if (data is null)
@@ -48,13 +48,13 @@ public class PaywindowController : ControllerBase
     }
 
     /// <summary>
-    /// Optional: Bridge-Server koennte nach erfolgreichem Mint hier
-    /// Bescheid geben, damit die Paywindow nicht erneut eingeloest werden kann.
+    /// Optional: after a successful mint the bridge server can hit this
+    /// endpoint so the paywindow cannot be redeemed again.
     /// </summary>
     [HttpPost("{id}/consume")]
     public async Task<IActionResult> Consume(string id, [FromBody] ConsumeRequest body)
     {
-        // TODO: Auth-Check wie oben.
+        // TODO: auth check as above.
         await _service.MarkConsumedAsync(id, body.PaymentTxHash, body.TokenId);
         return NoContent();
     }
@@ -66,7 +66,7 @@ public class ConsumeRequest
     public int TokenId { get; set; }
 }
 
-// ----- Service-Interface + Domain-Modell (du fuellst die Implementierung) -----
+// ----- Service interface + domain entity (you supply the implementation) -----
 
 public interface IPaywindowService
 {

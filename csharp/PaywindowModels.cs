@@ -1,15 +1,15 @@
 // ============================================================
-// DTOs fuer die Paywindow-Lookup-API.
+// DTOs for the paywindow lookup API.
 //
-// Das Paywindow-Frontend ruft den Node-Bridge-Server unter
+// The paywindow frontend calls the Node bridge at
 //   POST /api/build-mint   { id, buyerShieldedAddress }
-// auf. Der Bridge-Server holt zur "id" das hier definierte
-// PaywindowData-Objekt vom NMKR Studio:
+// The bridge in turn fetches the PaywindowData record for that id
+// from NMKR Studio:
 //   GET {NMKR_STUDIO_URL}/paywindow/{id}
 //
-// Achtung: OwnerSeed ist hochsensibel. Dieses Objekt darf das
-// NMKR-Studio-Backend NIEMALS an den Browser geben — nur an den
-// (auth'd) Paywindow-Bridge-Server.
+// SECURITY: OwnerSeed is highly sensitive. The NMKR Studio backend
+// must NEVER expose this object to a browser — only to the
+// authenticated paywindow bridge server.
 // ============================================================
 
 using System.Collections.Generic;
@@ -18,8 +18,8 @@ using System.Text.Json.Serialization;
 namespace Nmkr.Midnight.Paywindow.Models;
 
 /// <summary>
-/// Alles, was die Paywindow-Bridge zu einer Paywindow-Id braucht,
-/// um eine atomare Mint-Tx auf Midnight zu bauen.
+/// Everything the paywindow bridge needs for a given paywindow id
+/// in order to build an atomic mint transaction on Midnight.
 /// </summary>
 public class PaywindowData
 {
@@ -27,15 +27,15 @@ public class PaywindowData
     public string Id { get; set; } = "";
 
     /// <summary>
-    /// Collection-Owner-Seed (32-Byte hex oder Mnemonic — je nachdem wie
-    /// nmkr-midnight-api das erwartet). Wird zum Signieren der Mint-Tx benoetigt.
-    /// MUSS server-seitig bleiben — niemals zum Browser durchreichen.
+    /// Collection owner seed (32-byte hex or mnemonic, whichever
+    /// nmkr-midnight-api expects). Used to sign the mint transaction.
+    /// MUST stay server-side — never forward this to the browser.
     /// </summary>
     [JsonPropertyName("ownerSeed")]
     public string OwnerSeed { get; set; } = "";
 
     /// <summary>
-    /// Bech32m-Adresse des deployten NFT-Contracts, in den geminted wird.
+    /// Bech32m address of the deployed NFT contract to mint into.
     /// </summary>
     [JsonPropertyName("contractAddress")]
     public string ContractAddress { get; set; } = "";
@@ -44,8 +44,8 @@ public class PaywindowData
     public PaywindowNft Nft { get; set; } = new();
 
     /// <summary>
-    /// Optional. Wenn gesetzt, werden in derselben Tx NIGHT-Outputs
-    /// an die Empfaenger angehaengt (Buy &amp; Mint atomar).
+    /// Optional. When set, NIGHT outputs to the listed recipients are
+    /// appended to the same transaction (atomic buy &amp; mint).
     /// </summary>
     [JsonPropertyName("payment")]
     public PaywindowPayment? Payment { get; set; }
@@ -53,29 +53,29 @@ public class PaywindowData
 
 public class PaywindowNft
 {
-    /// <summary>Anzeigename des NFT — beim Reveal sichtbar.</summary>
+    /// <summary>Display name of the NFT — shown after the reveal.</summary>
     [JsonPropertyName("name")]
     public string Name { get; set; } = "";
 
-    /// <summary>URI/Link zu den ausfuehrlichen Metadaten (off-chain).</summary>
+    /// <summary>URI / link to the full off-chain metadata.</summary>
     [JsonPropertyName("uri")]
     public string Uri { get; set; } = "";
 
-    /// <summary>Image-URL (https oder ipfs).</summary>
+    /// <summary>Image URL (https or ipfs).</summary>
     [JsonPropertyName("image")]
     public string Image { get; set; } = "";
 
-    /// <summary>MIME-Typ des Image, z.B. "image/png" oder "image/svg+xml".</summary>
+    /// <summary>Image MIME type, e.g. "image/png" or "image/svg+xml".</summary>
     [JsonPropertyName("mediaType")]
     public string MediaType { get; set; } = "";
 
-    /// <summary>Beschreibung — erst nach erfolgreichem Mint sichtbar.</summary>
+    /// <summary>Description — revealed only after a successful mint.</summary>
     [JsonPropertyName("description")]
     public string Description { get; set; } = "";
 
     /// <summary>
-    /// Beliebige zusaetzliche Metadaten (rarity, edition, properties, …).
-    /// Werden beim Reveal-Klick angezeigt.
+    /// Arbitrary extra metadata (rarity, edition, properties, …).
+    /// Shown when the user clicks the metadata reveal button.
     /// </summary>
     [JsonPropertyName("attributes")]
     public Dictionary<string, object>? Attributes { get; set; }
@@ -83,7 +83,7 @@ public class PaywindowNft
 
 public class PaywindowPayment
 {
-    /// <summary>Gesamtpreis in NIGHT (nur Anzeige; tatsaechliche Verteilung steckt in Recipients).</summary>
+    /// <summary>Total price in NIGHT (display only; actual split lives in Recipients).</summary>
     [JsonPropertyName("priceNight")]
     public decimal PriceNight { get; set; }
 
@@ -93,11 +93,11 @@ public class PaywindowPayment
 
 public class PaywindowRecipient
 {
-    /// <summary>Bech32m unshielded NIGHT-Empfaengeradresse.</summary>
+    /// <summary>Bech32m unshielded NIGHT recipient address.</summary>
     [JsonPropertyName("address")]
     public string Address { get; set; } = "";
 
-    /// <summary>Betrag in atomaren NIGHT-Units (1 NIGHT = 1_000_000), als String wegen BigInt-Kompatibilitaet.</summary>
+    /// <summary>Amount in atomic NIGHT units (1 NIGHT = 1_000_000), as a string to preserve BigInt range.</summary>
     [JsonPropertyName("amountRaw")]
     public string AmountRaw { get; set; } = "";
 }
