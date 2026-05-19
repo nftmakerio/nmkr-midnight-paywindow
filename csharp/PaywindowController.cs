@@ -87,7 +87,6 @@ public class PaywindowEntity
     public string Image { get; set; } = "";
     public string MediaType { get; set; } = "";
     public string Description { get; set; } = "";
-    public decimal PriceNight { get; set; }
     public List<PaywindowRecipient> Recipients { get; set; } = new();
 
     public PaywindowData ToDto() => new()
@@ -103,10 +102,6 @@ public class PaywindowEntity
             MediaType = MediaType,
             Description = Description,
         },
-        Payment = Recipients.Count == 0 ? null : new PaywindowPayment
-        {
-            PriceNight = PriceNight,
-            Recipients = Recipients,
-        },
+        Recipients = Recipients.Count == 0 ? null : Recipients,
     };
 }

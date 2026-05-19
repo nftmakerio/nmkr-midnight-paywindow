@@ -31,9 +31,16 @@
       font-size: 1.1rem;
       font-weight: 500;
       opacity: 0.9;
-      margin: 0 0 1.5rem 0;
+      margin: 0 0 0.4rem 0;
       letter-spacing: 0.02em;
     }
+    .price {
+      font-size: 1.6rem;
+      font-weight: 700;
+      margin: 0 0 1.4rem 0;
+      letter-spacing: 0.01em;
+    }
+    .price:empty { display: none; }
     .btn {
       background: #ffffff;
       color: #0d4d2a;
@@ -125,6 +132,7 @@
   <div class="frame">
     <img class="logo" src="https://studio.nmkr.io/images/nmkr-studio-logo.svg" alt="NMKR" />
     <h1 id="title">Mint NFT on Midnight</h1>
+    <div id="price" class="price"></div>
 
     <button id="mintBtn" class="btn" disabled>Mint NFT</button>
     <div id="status" class="status">Loading…</div>

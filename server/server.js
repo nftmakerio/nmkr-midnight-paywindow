@@ -5,7 +5,7 @@
 //   1. Browser opens /?id=<paywindowId>
 //   2. Frontend calls   GET  /api/paywindow/:id           (pre-flight)
 //        -> bridge fetches paywindow data from NMKR Studio
-//        -> returns { ok, priceNight } (NO seed, NO metadata)
+//        -> returns { ok, hasPayment, totalNightRaw } (NO seed, NO metadata)
 //        -> 404 if unknown, 410 if consumed/expired
 //   3. Frontend calls   POST /api/build-mint              (on button click)
 //        -> bridge calls nmkr-midnight-api /api/nft/build-unsealed-mint
@@ -108,10 +108,7 @@ async function fetchPaywindow(id) {
         mediaType: 'image/svg+xml',
         description: 'Demo NFT minted from the NMKR Paywindow.',
       },
-      payment: {
-        priceNight: MOCK_PRICE_NIGHT,
-        recipients: MOCK_RECIPIENTS.map(addr => ({ address: addr, amountRaw: perRaw.toString() })),
-      },
+      recipients: MOCK_RECIPIENTS.map(addr => ({ address: addr, amountRaw: perRaw.toString() })),
     };
   }
 
@@ -145,6 +142,13 @@ async function fetchPaywindow(id) {
 
 // Send an HttpError (or unknown Error) as a JSON response with the
 // right status code. Never lets HTML leak to the client.
+// Sum the recipient amounts to a single BigInt — returned to the client
+// as a string so the browser can divide by 1_000_000 itself (BigInt-safe).
+function totalNightRaw(pw) {
+  const recipients = pw?.recipients || [];
+  return recipients.reduce((s, r) => s + BigInt(r.amountRaw), 0n).toString();
+}
+
 function sendError(res, err) {
   if (err instanceof HttpError) {
     return res.status(err.status).json({ error: err.message, details: err.details });
@@ -171,8 +175,8 @@ app.get('/api/paywindow/:id', async (req, res) => {
     res.json({
       ok: true,
       id: pw.id,
-      priceNight: pw.payment?.priceNight ?? 0,
-      hasPayment: Boolean(pw.payment?.recipients?.length),
+      hasPayment: Boolean(pw.recipients?.length),
+      totalNightRaw: totalNightRaw(pw),
     });
   } catch (err) { sendError(res, err); }
 });
@@ -197,7 +201,7 @@ app.post('/api/build-mint', async (req, res) => {
       image: pw.nft.image || '',
       mediaType: pw.nft.mediaType || '',
       toShieldedAddress: buyerShieldedAddress,
-      nightRecipients: (pw.payment?.recipients || []).map(r => ({
+      nightRecipients: (pw.recipients || []).map(r => ({
         address: r.address,
         amountRaw: r.amountRaw,
       })),
@@ -223,7 +227,7 @@ app.post('/api/build-mint', async (req, res) => {
       tokenId: j.tokenId,
       contractAddress: j.contractAddress,
       preview: { name: pw.nft.name, image: pw.nft.image },
-      priceNight: pw.payment?.priceNight ?? 0,
+      totalNightRaw: totalNightRaw(pw),
     });
   } catch (err) { sendError(res, err); }
 });

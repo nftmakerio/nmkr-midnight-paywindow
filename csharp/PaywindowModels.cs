@@ -48,12 +48,20 @@ public class PaywindowData
     public PaywindowNft Nft { get; set; } = new();
 
     /// <summary>
-    /// Optional. When set, NIGHT outputs to the listed recipients are
-    /// appended to the same transaction (atomic buy &amp; mint).
+    /// Optional. When set and non-empty, NIGHT outputs to the listed
+    /// recipients are appended to the same transaction (atomic buy &amp; mint).
+    /// Omit or send an empty list for a free mint.
     /// </summary>
-    [JsonPropertyName("payment")]
-    public PaywindowPayment? Payment { get; set; }
+    [JsonPropertyName("recipients")]
+    public List<PaywindowRecipient>? Recipients { get; set; }
 }
+
+/// <summary>One NIGHT payment output included in the mint transaction.</summary>
+/// <param name="Address">Bech32m unshielded NIGHT recipient address.</param>
+/// <param name="AmountRaw">Amount in atomic NIGHT units (1 NIGHT = 1_000_000) as a string (BigInt-safe).</param>
+public record PaywindowRecipient(
+    [property: JsonPropertyName("address")]   string Address,
+    [property: JsonPropertyName("amountRaw")] string AmountRaw);
 
 public class PaywindowNft
 {
@@ -78,23 +86,3 @@ public class PaywindowNft
     public string Description { get; set; } = "";
 }
 
-public class PaywindowPayment
-{
-    /// <summary>Total price in NIGHT (display only; actual split lives in Recipients).</summary>
-    [JsonPropertyName("priceNight")]
-    public decimal PriceNight { get; set; }
-
-    [JsonPropertyName("recipients")]
-    public List<PaywindowRecipient> Recipients { get; set; } = new();
-}
-
-public class PaywindowRecipient
-{
-    /// <summary>Bech32m unshielded NIGHT recipient address.</summary>
-    [JsonPropertyName("address")]
-    public string Address { get; set; } = "";
-
-    /// <summary>Amount in atomic NIGHT units (1 NIGHT = 1_000_000), as a string to preserve BigInt range.</summary>
-    [JsonPropertyName("amountRaw")]
-    public string AmountRaw { get; set; } = "";
-}

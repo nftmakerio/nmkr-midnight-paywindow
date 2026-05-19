@@ -148,7 +148,7 @@ sensitive data — the bridge calls NMKR Studio internally and only
 returns whether the id is usable and the price.
 
 ```json
-{ "ok": true, "id": "12345", "priceNight": 2, "hasPayment": true }
+{ "ok": true, "id": "12345", "hasPayment": true, "totalNightRaw": "2000000" }
 ```
 
 Returns `404` if the id is unknown, `410` if it was already consumed or
@@ -168,7 +168,7 @@ The bridge fetches the PaywindowData, forwards the build to
   "tokenId": 42,
   "contractAddress": "...",
   "preview": { "name": "...", "image": "https://..." },
-  "priceNight": 2
+  "totalNightRaw": "2000000"
 }
 ```
 
@@ -214,13 +214,10 @@ Example response:
     "mediaType": "image/png",
     "description": "Shown after the reveal."
   },
-  "payment": {
-    "priceNight": 2,
-    "recipients": [
-      { "address": "mn_addr_preview1...", "amountRaw": "1000000" },
-      { "address": "mn_addr_preview1...", "amountRaw": "1000000" }
-    ]
-  }
+  "recipients": [
+    { "address": "mn_addr_preview1...", "amountRaw": "1000000" },
+    { "address": "mn_addr_preview1...", "amountRaw": "1000000" }
+  ]
 }
 ```
 
