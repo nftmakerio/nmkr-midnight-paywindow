@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -60,6 +60,18 @@
       opacity: 0.85;
       min-height: 1.2em;
     }
+    .status.error {
+      color: #fff;
+      background: rgba(180, 30, 30, 0.55);
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 10px;
+      padding: 0.65rem 0.9rem;
+      margin-top: 1rem;
+      text-align: left;
+      font-size: 0.85rem;
+      opacity: 1;
+      word-break: break-word;
+    }
     .reveal {
       margin-top: 1.5rem;
       opacity: 0;
@@ -114,17 +126,17 @@
 <body>
   <div class="frame">
     <img class="logo" src="https://studio.nmkr.io/images/nmkr-studio-logo.svg" alt="NMKR" />
-    <h1 id="title">NFT minten auf Midnight</h1>
+    <h1 id="title">Mint NFT on Midnight</h1>
 
     <button id="mintBtn" class="btn" disabled>Mint NFT</button>
-    <div id="status" class="status">verbinde Wallet …</div>
+    <div id="status" class="status">Loading…</div>
 
     <div id="reveal" class="reveal">
       <div class="reveal-card">
         <img id="nftImage" alt="">
         <h2 id="nftName"></h2>
         <div class="sub">Token #<span id="nftTokenId"></span> · <code id="nftContract"></code></div>
-        <button id="showMetaBtn" class="btn secondary" style="color:#0d4d2a; border-color:#0d4d2a;">Metadaten anzeigen</button>
+        <button id="showMetaBtn" class="btn secondary" style="color:#0d4d2a; border-color:#0d4d2a;">Show metadata</button>
         <pre id="nftMeta" class="meta"></pre>
       </div>
     </div>

@@ -1,9 +1,11 @@
 // ============================================================
 // NMKR Paywindow client
-// - Liest ?id=... aus der URL
-// - Verbindet 1AM automatisch (window.midnight.<id>.connect)
-// - Mint-Button: build-mint -> balanceUnsealedTransaction -> submitTransaction
-// - Reveal nach Erfolg: Image + Name; danach Metadaten on demand
+// - Reads ?id=... from the URL
+// - On load: validates the id against the bridge (GET /api/paywindow/:id)
+//   and connects 1AM in parallel
+// - Mint button only becomes active when BOTH succeed
+// - On click: build-mint -> balanceUnsealedTransaction -> submitTransaction
+// - On success: reveals image+name, then metadata on a separate click
 // ============================================================
 
 const NETWORK = 'preview';
@@ -13,11 +15,45 @@ const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const PAYWINDOW_ID = params.get('id');
 
-const setStatus = (msg) => { $('status').textContent = msg; };
-const setTitle  = (msg) => { $('title').textContent = msg; };
+const setStatus = (msg, isError = false) => {
+  const el = $('status');
+  el.textContent = msg;
+  el.classList.toggle('error', Boolean(isError));
+};
+const setTitle = (msg) => { $('title').textContent = msg; };
 
 let connectedApi = null;
 let shieldedAddr = null;
+let paywindowOk  = false;
+let walletOk     = false;
+
+// ------------------------------------------------------------
+// Robust JSON fetch: if the response is HTML (typical for misrouted
+// requests, missing endpoints behind a reverse proxy, or login pages),
+// surface a readable error instead of "Unexpected token '<'".
+// ------------------------------------------------------------
+async function fetchJson(url, init) {
+  let res;
+  try {
+    res = await fetch(url, init);
+  } catch (err) {
+    throw new Error(`Network error contacting ${url}: ${err.message}`);
+  }
+  const text = await res.text();
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  const looksLikeJson = ct.includes('application/json') || text.trimStart().startsWith('{') || text.trimStart().startsWith('[');
+  if (!looksLikeJson) {
+    const snippet = text.replace(/\s+/g, ' ').slice(0, 160);
+    throw new Error(`Expected JSON from ${url} but got ${ct || 'no content-type'} (HTTP ${res.status}). Body starts with: ${snippet}`);
+  }
+  let data;
+  try { data = JSON.parse(text); }
+  catch (err) { throw new Error(`Malformed JSON from ${url}: ${err.message}`); }
+  if (!res.ok) {
+    throw new Error(data?.error || `HTTP ${res.status} from ${url}`);
+  }
+  return data;
+}
 
 function findProviders() {
   const root = window.midnight;
@@ -27,72 +63,90 @@ function findProviders() {
     .map(([key, api]) => ({ key, api, name: api.name, rdns: api.rdns }));
 }
 
-async function autoConnect() {
+function refreshButton() {
+  $('mintBtn').disabled = !(paywindowOk && walletOk);
+  if (paywindowOk && walletOk) setStatus('Ready to mint.');
+}
+
+// ------------------------------------------------------------
+// Pre-flight: validate the id against the bridge before doing anything else.
+// ------------------------------------------------------------
+async function validatePaywindow() {
   if (!PAYWINDOW_ID) {
-    setTitle('Fehler');
-    setStatus('Kein ?id=… in der URL.');
+    setTitle('Invalid link');
+    setStatus('Missing ?id=… parameter in the URL.', true);
     return;
   }
+  try {
+    const info = await fetchJson(`${API}/paywindow/${encodeURIComponent(PAYWINDOW_ID)}`);
+    paywindowOk = info.ok === true;
+    refreshButton();
+  } catch (err) {
+    setTitle('Cannot load paywindow');
+    setStatus(err.message, true);
+  }
+}
 
+// ------------------------------------------------------------
+// Wallet auto-connect.
+// ------------------------------------------------------------
+async function connectWallet() {
   let providers = findProviders();
   for (let i = 0; i < 8 && providers.length === 0; i++) {
     await new Promise(r => setTimeout(r, 350));
     providers = findProviders();
   }
   if (providers.length === 0) {
-    setStatus('Keine Midnight-Wallet im Browser gefunden.');
+    setStatus('No Midnight wallet detected in this browser.', true);
     return;
   }
-
   const pick = providers.find(p => /1am|midnight/i.test(p.name + p.rdns)) ?? providers[0];
-  setStatus(`verbinde mit ${pick.name} …`);
   try {
     connectedApi = await pick.api.connect(NETWORK);
     const s = await connectedApi.getShieldedAddresses();
     shieldedAddr = s.shieldedAddress;
-    setStatus('bereit zum Minten');
-    $('mintBtn').disabled = false;
+    walletOk = true;
+    refreshButton();
   } catch (err) {
-    setStatus(`Wallet-Verbindung fehlgeschlagen: ${err.message ?? err}`);
+    setStatus(`Wallet connection failed: ${err.message ?? err}`, true);
   }
 }
 
+// ------------------------------------------------------------
+// Mint flow.
+// ------------------------------------------------------------
 async function mint() {
   $('mintBtn').disabled = true;
-  setStatus('baue Mint-Tx auf dem Server …');
+  setStatus('Building mint transaction…');
   try {
-    const r = await fetch(`${API}/build-mint`, {
+    const built = await fetchJson(`${API}/build-mint`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: PAYWINDOW_ID, buyerShieldedAddress: shieldedAddr }),
     });
-    const built = await r.json();
-    if (!r.ok) throw new Error(built.error || `HTTP ${r.status}`);
 
-    setStatus('Wallet bestaetigen — Tx wird balanciert …');
+    setStatus('Confirm in your wallet — balancing transaction…');
     const balanced = await connectedApi.balanceUnsealedTransaction(built.unsealedTxHex);
     const txHex = balanced?.tx ?? balanced?.transaction;
-    if (!txHex) throw new Error('Wallet hat keine tx zurueckgegeben');
+    if (!txHex) throw new Error('Wallet did not return a balanced transaction.');
 
-    setStatus('Wallet bestaetigen — submitte Tx …');
+    setStatus('Confirm in your wallet — submitting transaction…');
     await connectedApi.submitTransaction(txHex);
 
-    setStatus('Mint erfolgreich — entschluesselt NFT …');
+    setStatus('Mint successful — decrypting NFT…');
     await revealNft(built);
   } catch (err) {
-    setStatus(`Fehler: ${err.message ?? err}`);
+    setStatus(`Error: ${err.message ?? err}`, true);
     $('mintBtn').disabled = false;
   }
 }
 
 async function revealNft(built) {
-  const r = await fetch(`${API}/reveal-metadata`, {
+  const meta = await fetchJson(`${API}/reveal-metadata`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id: PAYWINDOW_ID }),
   });
-  const meta = await r.json();
-  if (!r.ok) throw new Error(meta.error || `HTTP ${r.status}`);
 
   $('nftImage').src = meta.image;
   $('nftImage').alt = meta.name;
@@ -115,7 +169,11 @@ $('mintBtn').addEventListener('click', mint);
 $('showMetaBtn').addEventListener('click', () => {
   const el = $('nftMeta');
   el.classList.toggle('show');
-  $('showMetaBtn').textContent = el.classList.contains('show') ? 'Metadaten verbergen' : 'Metadaten anzeigen';
+  $('showMetaBtn').textContent = el.classList.contains('show') ? 'Hide metadata' : 'Show metadata';
 });
 
-window.addEventListener('DOMContentLoaded', autoConnect);
+window.addEventListener('DOMContentLoaded', () => {
+  // Run both in parallel — the button only unlocks when both succeed.
+  validatePaywindow();
+  connectWallet();
+});
