@@ -22,16 +22,15 @@ const setStatus = (msg, isError = false) => {
 };
 const setTitle = (msg) => { $('title').textContent = msg; };
 
-// Format a raw NIGHT amount (atomic units, as a string from the server)
-// as a human-readable "X NIGHT" / "X.YYY NIGHT" line. BigInt-safe so it
-// works for amounts that exceed Number.MAX_SAFE_INTEGER.
-function formatNight(rawString) {
-  const raw = BigInt(rawString || '0');
-  if (raw === 0n) return '';
-  const whole = raw / 1_000_000n;
-  const frac  = raw % 1_000_000n;
-  if (frac === 0n) return `${whole} NIGHT`;
-  const fracStr = frac.toString().padStart(6, '0').replace(/0+$/, '');
+// Format a raw NIGHT amount (atomic units, 1 NIGHT = 1_000_000)
+// as a human-readable "X NIGHT" / "X.YYY NIGHT" line.
+function formatNight(raw) {
+  const n = Number(raw) || 0;
+  if (n === 0) return '';
+  const whole = Math.trunc(n / 1_000_000);
+  const frac  = n % 1_000_000;
+  if (frac === 0) return `${whole} NIGHT`;
+  const fracStr = String(frac).padStart(6, '0').replace(/0+$/, '');
   return `${whole}.${fracStr} NIGHT`;
 }
 

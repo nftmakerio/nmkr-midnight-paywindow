@@ -58,10 +58,10 @@ public class PaywindowData
 
 /// <summary>One NIGHT payment output included in the mint transaction.</summary>
 /// <param name="Address">Bech32m unshielded NIGHT recipient address.</param>
-/// <param name="AmountRaw">Amount in atomic NIGHT units (1 NIGHT = 1_000_000) as a string (BigInt-safe).</param>
+/// <param name="AmountRaw">Amount in atomic NIGHT units (1 NIGHT = 1_000_000).</param>
 public record PaywindowRecipient(
     [property: JsonPropertyName("address")]   string Address,
-    [property: JsonPropertyName("amountRaw")] string AmountRaw);
+    [property: JsonPropertyName("amountRaw")] long   AmountRaw);
 
 public class PaywindowNft
 {

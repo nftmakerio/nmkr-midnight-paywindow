@@ -96,7 +96,7 @@ async function fetchPaywindow(id) {
     if (id === 'expired') {
       throw new HttpError(410, `paywindow id "${id}" has been consumed or expired`);
     }
-    const perRaw = BigInt(Math.floor((MOCK_PRICE_NIGHT * 1_000_000) / MOCK_RECIPIENTS.length));
+    const perRaw = Math.floor((MOCK_PRICE_NIGHT * 1_000_000) / MOCK_RECIPIENTS.length);
     return {
       id,
       ownerSeed: MOCK_OWNER_SEED,
@@ -108,7 +108,7 @@ async function fetchPaywindow(id) {
         mediaType: 'image/svg+xml',
         description: 'Demo NFT minted from the NMKR Paywindow.',
       },
-      recipients: MOCK_RECIPIENTS.map(addr => ({ address: addr, amountRaw: perRaw.toString() })),
+      recipients: MOCK_RECIPIENTS.map(addr => ({ address: addr, amountRaw: perRaw })),
     };
   }
 
@@ -142,11 +142,11 @@ async function fetchPaywindow(id) {
 
 // Send an HttpError (or unknown Error) as a JSON response with the
 // right status code. Never lets HTML leak to the client.
-// Sum the recipient amounts to a single BigInt — returned to the client
-// as a string so the browser can divide by 1_000_000 itself (BigInt-safe).
+// Sum the recipient amounts. Returned in atomic units; the browser
+// divides by 1_000_000 for display.
 function totalNightRaw(pw) {
   const recipients = pw?.recipients || [];
-  return recipients.reduce((s, r) => s + BigInt(r.amountRaw), 0n).toString();
+  return recipients.reduce((s, r) => s + Number(r.amountRaw), 0);
 }
 
 function sendError(res, err) {
@@ -201,9 +201,11 @@ app.post('/api/build-mint', async (req, res) => {
       image: pw.nft.image || '',
       mediaType: pw.nft.mediaType || '',
       toShieldedAddress: buyerShieldedAddress,
+      // nmkr-midnight-api takes amountRaw as a BigInt-safe string,
+      // so stringify here while the rest of this codebase uses numbers.
       nightRecipients: (pw.recipients || []).map(r => ({
         address: r.address,
-        amountRaw: r.amountRaw,
+        amountRaw: String(r.amountRaw),
       })),
     };
 
