@@ -38,6 +38,7 @@ let connectedApi = null;
 let shieldedAddr = null;
 let paywindowOk  = false;
 let walletOk     = false;
+let backendOk    = false;
 
 // ------------------------------------------------------------
 // Robust JSON fetch: if the response is HTML (typical for misrouted
@@ -90,8 +91,53 @@ function findProviders() {
 }
 
 function refreshButton() {
-  $('mintBtn').disabled = !(paywindowOk && walletOk);
-  if (paywindowOk && walletOk) setStatus('Ready to mint.');
+  $('mintBtn').disabled = !(paywindowOk && walletOk && backendOk);
+  if (paywindowOk && walletOk && backendOk) setStatus('Ready to mint.');
+}
+
+// ------------------------------------------------------------
+// Health check: probes the bridge's /api/health, which in turn
+// probes nmkr-midnight-api and NMKR Studio. Fails fast with a clear
+// message if any dependency is unreachable or misconfigured.
+// ------------------------------------------------------------
+async function checkBackends() {
+  let info;
+  try {
+    info = await fetchJson(`${API}/health`);
+  } catch (err) {
+    // fetchJson throws on !res.ok — but our health endpoint returns the
+    // diagnostic body even at 503. Re-fetch raw to get it.
+    try {
+      const raw = await fetch(`${API}/health`);
+      info = await raw.json();
+    } catch {
+      setTitle('Service unavailable');
+      setStatus(`Cannot reach the paywindow backend: ${err.message}`, true);
+      return;
+    }
+  }
+  console.log('[paywindow] health', info);
+
+  const problems = [];
+  if (!info.nmkrMidnightApi?.ok) {
+    problems.push(`Midnight API: ${info.nmkrMidnightApi?.error ?? 'unreachable'}`);
+  } else if (info.nmkrMidnightApi?.network && info.nmkrMidnightApi.network !== NETWORK) {
+    problems.push(
+      `Midnight API is running on "${info.nmkrMidnightApi.network}" ` +
+      `but this paywindow targets "${NETWORK}". Set MIDNIGHT_NETWORK=${NETWORK} on the API service.`,
+    );
+  }
+  if (!info.nmkrStudio?.ok) {
+    problems.push(`NMKR Studio: ${info.nmkrStudio?.error ?? 'unreachable'}`);
+  }
+
+  if (problems.length) {
+    setTitle('Service unavailable');
+    setStatus(problems.join('\n'), true);
+    return;
+  }
+  backendOk = true;
+  refreshButton();
 }
 
 // ------------------------------------------------------------
@@ -231,7 +277,10 @@ async function revealNft(built) {
 $('mintBtn').addEventListener('click', mint);
 
 window.addEventListener('DOMContentLoaded', () => {
-  // Run both in parallel — the button only unlocks when both succeed.
+  // Three checks run in parallel; the Mint button unlocks only when
+  // all three have passed (backend healthy, paywindow id valid, wallet
+  // connected and on the matching network).
+  checkBackends();
   validatePaywindow();
   connectWallet();
 });

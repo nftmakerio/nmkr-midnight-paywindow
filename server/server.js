@@ -201,6 +201,68 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, '..', 'web', 'public')));
 
+// Health check: probes nmkr-midnight-api and NMKR Studio so the frontend
+// can fail fast and tell the user which dependency is down. Cheap to call;
+// no auth required.
+app.get('/api/health', async (_req, res) => {
+  const result = {
+    bridge: { ok: true, port: PORT, mock: PAYWINDOW_MOCK },
+    nmkrMidnightApi: { ok: false, url: NMKR_API_URL },
+    nmkrStudio: { ok: false, url: PAYWINDOW_MOCK ? '[MOCK]' : NMKR_STUDIO_URL },
+  };
+
+  // nmkr-midnight-api — quick GET /api/health with a 3s timeout.
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 3000);
+    const r = await fetch(`${NMKR_API_URL}/api/health`, { signal: ctl.signal });
+    clearTimeout(t);
+    if (r.ok) {
+      const j = await r.json().catch(() => ({}));
+      result.nmkrMidnightApi = { ok: true, url: NMKR_API_URL, network: j?.network ?? null };
+    } else {
+      result.nmkrMidnightApi.error = `HTTP ${r.status}`;
+    }
+  } catch (err) {
+    result.nmkrMidnightApi.error = err.name === 'AbortError'
+      ? `timeout after 3s contacting ${NMKR_API_URL}`
+      : err.message;
+  }
+
+  // NMKR Studio — in MOCK mode there's nothing to probe.
+  if (PAYWINDOW_MOCK) {
+    result.nmkrStudio.ok = true;
+  } else {
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 3000);
+      // We don't have an unauthenticated health endpoint at Studio; hit
+      // /GetMidnightPaywindowDetails with a sentinel id and rely on the
+      // server returning 401/404 (which proves it's reachable + auth works
+      // or the bearer is wrong, depending on the code).
+      const headers = { accept: 'text/plain', Authorization: `Bearer ${NMKR_STUDIO_KEY}` };
+      const r = await fetch(`${NMKR_STUDIO_URL}/GetMidnightPaywindowDetails?reservationid=healthcheck-probe`,
+        { headers, signal: ctl.signal });
+      clearTimeout(t);
+      if (r.status === 401 || r.status === 403) {
+        result.nmkrStudio.error = `auth rejected (HTTP ${r.status}) — check NMKR_STUDIO_API_KEY`;
+      } else {
+        // Any other response (200, 404, 410, even 500) means we reached the
+        // server with a valid bearer; the health check passes.
+        result.nmkrStudio.ok = true;
+        result.nmkrStudio.probeStatus = r.status;
+      }
+    } catch (err) {
+      result.nmkrStudio.error = err.name === 'AbortError'
+        ? `timeout after 3s contacting ${NMKR_STUDIO_URL}`
+        : err.message;
+    }
+  }
+
+  const allOk = result.bridge.ok && result.nmkrMidnightApi.ok && result.nmkrStudio.ok;
+  res.status(allOk ? 200 : 503).json({ ok: allOk, ...result });
+});
+
 // 1) Pre-flight: validate the paywindow id without exposing any
 //    sensitive data. Used by the frontend on page load to fail fast
 //    if the link is bad/expired.
