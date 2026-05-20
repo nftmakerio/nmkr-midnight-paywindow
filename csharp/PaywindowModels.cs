@@ -5,7 +5,7 @@
 //   POST /api/build-mint   { id, buyerShieldedAddress }
 // The bridge in turn fetches the PaywindowData record for that id
 // from NMKR Studio:
-//   GET {NMKR_STUDIO_URL}/paywindow/{id}
+//   GET {NMKR_STUDIO_URL}/GetMidnightPaywindowDetails?reservationid={id}
 //
 // SECURITY: OwnerSeed is highly sensitive. The NMKR Studio backend
 // must NEVER expose this object to a browser — only to the

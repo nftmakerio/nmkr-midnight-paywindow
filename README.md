@@ -29,7 +29,8 @@ the off-chain metadata JSON).
 │  Bridge server (this repo) │   Node + Express
 └──────┬──────────────┬──────┘
        │              │
-       │              │  GET /paywindow/:id (Bearer)
+       │              │  GET /v2/GetMidnightPaywindowDetails?reservationid=…
+       │              │  (Bearer)
        │              ▼
        │      ┌──────────────────────────┐
        │      │  NMKR Studio              │
@@ -107,17 +108,29 @@ without touching the real Studio:
 
 ## Running against real NMKR Studio
 
+Preprod (default):
+
 ```bash
 PORT=4100 \
 NMKR_API_URL=http://127.0.0.1:3002 \
-NMKR_STUDIO_URL=https://studio.nmkr.io/api \
 NMKR_STUDIO_API_KEY=<bearer-token> \
 npm start
 ```
 
-The bridge will hit `GET {NMKR_STUDIO_URL}/paywindow/{id}` with the
-configured bearer token and expects the response to match
-[`PaywindowData`](csharp/PaywindowModels.cs).
+Mainnet — override the base URL:
+
+```bash
+PORT=4100 \
+NMKR_API_URL=http://127.0.0.1:3002 \
+NMKR_STUDIO_URL=https://studio-api.nmkr.io/v2 \
+NMKR_STUDIO_API_KEY=<bearer-token> \
+npm start
+```
+
+The bridge calls
+`GET {NMKR_STUDIO_URL}/GetMidnightPaywindowDetails?reservationid={id}`
+with the bearer token from `NMKR_STUDIO_API_KEY`, and expects the
+response to match [`PaywindowData`](csharp/PaywindowModels.cs).
 
 ---
 
@@ -127,8 +140,8 @@ configured bearer token and expects the response to match
 |---|---|---|
 | `PORT` | `4100` | HTTP port the bridge listens on |
 | `NMKR_API_URL` | `http://localhost:3002` | URL of the `nmkr-midnight-api` instance that does the actual proving + signing |
-| `NMKR_STUDIO_URL` | — | URL of the paywindow lookup API (production) |
-| `NMKR_STUDIO_API_KEY` | — | Optional bearer token sent to NMKR Studio |
+| `NMKR_STUDIO_URL` | `https://studio-api.preprod.nmkr.io/v2` | Base URL of NMKR Studio. Set to `https://studio-api.nmkr.io/v2` for mainnet. |
+| `NMKR_STUDIO_API_KEY` | — | Bearer token sent to NMKR Studio (required unless `PAYWINDOW_MOCK=1`) |
 | `PAYWINDOW_MOCK` | — | Set to `1` to bypass NMKR Studio (dev mode) |
 | `OWNER_SEED` | — | (mock mode) seed used to sign the mint |
 | `CONTRACT_ADDRESS` | — | (mock mode) contract to mint into |
@@ -191,8 +204,21 @@ URI is shown as a clickable link in the reveal card; rich attributes
 ## NMKR Studio side — required endpoint
 
 ```
-GET  /paywindow/{id}
+GET  /v2/GetMidnightPaywindowDetails?reservationid={id}
+Accept: text/plain
 Authorization: Bearer <api-key>
+```
+
+Concrete examples:
+
+```bash
+# Preprod
+curl -H "Authorization: Bearer $KEY" \
+  "https://studio-api.preprod.nmkr.io/v2/GetMidnightPaywindowDetails?reservationid=222"
+
+# Mainnet
+curl -H "Authorization: Bearer $KEY" \
+  "https://studio-api.nmkr.io/v2/GetMidnightPaywindowDetails?reservationid=222"
 ```
 
 Response: a `PaywindowData` JSON document — see
@@ -226,9 +252,10 @@ Recommended behaviour:
 - **Authenticate** the endpoint with a bearer token and restrict it to
   the bridge server's IP — the response contains the owner seed.
 - Return **`404`** for unknown ids.
-- Return **`410 Gone`** once a paywindow has been redeemed (the bridge
-  can call `POST /paywindow/{id}/consume` after a successful mint to
-  mark it as such — see `PaywindowController.cs`).
+- Return **`410 Gone`** once a reservation has been redeemed (the bridge
+  can hit a `ConsumeMidnightPaywindow` endpoint after a successful mint
+  to mark it as such — see the optional handler in
+  `PaywindowController.cs`).
 
 ---
 

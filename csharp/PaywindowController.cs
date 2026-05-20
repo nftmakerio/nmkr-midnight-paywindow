@@ -1,7 +1,8 @@
 // ============================================================
 // Sample controller for NMKR Studio.
 // The bridge server calls:
-//   GET /paywindow/{id}
+//   GET /v2/GetMidnightPaywindowDetails?reservationid={id}
+//   Accept: text/plain
 //   Authorization: Bearer <api-key>
 // and expects PaywindowData as JSON.
 //
@@ -15,7 +16,7 @@ using Nmkr.Midnight.Paywindow.Models;
 namespace Nmkr.Midnight.Paywindow.Api;
 
 [ApiController]
-[Route("paywindow")]
+[Route("v2")]
 public class PaywindowController : ControllerBase
 {
     private readonly IPaywindowService _service;
@@ -26,36 +27,36 @@ public class PaywindowController : ControllerBase
     }
 
     /// <summary>
-    /// Returns the data required to mint for a given paywindow id.
+    /// Returns the data required to mint for a given reservation id.
     /// MUST be authenticated (bridge-server only) — the response
     /// contains the OwnerSeed.
     /// </summary>
-    [HttpGet("{id}")]
-    public async Task<ActionResult<PaywindowData>> Get(string id)
+    [HttpGet("GetMidnightPaywindowDetails")]
+    public async Task<ActionResult<PaywindowData>> Get([FromQuery] string reservationid)
     {
         // TODO: validate the API key / bearer token against an allowlist
         //       (Authorization header), e.g. via an attribute or middleware.
 
-        var data = await _service.GetByIdAsync(id);
+        var data = await _service.GetByIdAsync(reservationid);
         if (data is null)
-            return NotFound(new { error = "paywindow id unknown" });
+            return NotFound(new { error = "reservation id unknown" });
 
         if (data.Status == PaywindowStatus.Consumed)
             return StatusCode(StatusCodes.Status410Gone,
-                new { error = "paywindow already used" });
+                new { error = "reservation already used" });
 
         return Ok(data.ToDto());
     }
 
     /// <summary>
     /// Optional: after a successful mint the bridge server can hit this
-    /// endpoint so the paywindow cannot be redeemed again.
+    /// endpoint so the reservation cannot be redeemed again.
     /// </summary>
-    [HttpPost("{id}/consume")]
-    public async Task<IActionResult> Consume(string id, [FromBody] ConsumeRequest body)
+    [HttpPost("ConsumeMidnightPaywindow")]
+    public async Task<IActionResult> Consume([FromQuery] string reservationid, [FromBody] ConsumeRequest body)
     {
         // TODO: auth check as above.
-        await _service.MarkConsumedAsync(id, body.PaymentTxHash, body.TokenId);
+        await _service.MarkConsumedAsync(reservationid, body.PaymentTxHash, body.TokenId);
         return NoContent();
     }
 }

@@ -16,9 +16,11 @@
 //
 // Env:
 //   PORT                       default 4100
-//   NMKR_API_URL               default http://localhost:3002
-//   NMKR_STUDIO_URL            URL of the paywindow lookup API
-//   NMKR_STUDIO_API_KEY        optional bearer token
+//   NMKR_API_URL               default http://localhost:3002 (the local mint signer)
+//   NMKR_STUDIO_URL            base URL of NMKR Studio (no trailing slash, no path).
+//                              default https://studio-api.preprod.nmkr.io/v2
+//                              for mainnet use https://studio-api.nmkr.io/v2
+//   NMKR_STUDIO_API_KEY        bearer token for NMKR Studio (required unless PAYWINDOW_MOCK=1)
 //   PAYWINDOW_MOCK=1           dev mode: serve a synthetic paywindow built from
 //                              OWNER_SEED + CONTRACT_ADDRESS + RECIPIENT_* env vars
 // ============================================================
@@ -31,7 +33,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT              = Number(process.env.PORT) || 4100;
 const NMKR_API_URL      = process.env.NMKR_API_URL      || 'http://localhost:3002';
-const NMKR_STUDIO_URL   = process.env.NMKR_STUDIO_URL   || '';
+const NMKR_STUDIO_URL   = (process.env.NMKR_STUDIO_URL || 'https://studio-api.preprod.nmkr.io/v2').replace(/\/$/, '');
 const NMKR_STUDIO_KEY   = process.env.NMKR_STUDIO_API_KEY || '';
 const PAYWINDOW_MOCK    = process.env.PAYWINDOW_MOCK === '1';
 
@@ -40,8 +42,8 @@ const MOCK_CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS || '';
 const MOCK_RECIPIENTS = [process.env.RECIPIENT_1, process.env.RECIPIENT_2, process.env.RECIPIENT_3].filter(Boolean);
 const MOCK_PRICE_NIGHT = Number(process.env.PRICE_NIGHT) || 2;
 
-if (!PAYWINDOW_MOCK && !NMKR_STUDIO_URL) {
-  console.error('FATAL: set NMKR_STUDIO_URL, or PAYWINDOW_MOCK=1 with OWNER_SEED + CONTRACT_ADDRESS.');
+if (!PAYWINDOW_MOCK && !NMKR_STUDIO_KEY) {
+  console.error('FATAL: NMKR_STUDIO_API_KEY is required (or set PAYWINDOW_MOCK=1 for dev).');
   process.exit(1);
 }
 if (PAYWINDOW_MOCK && (!MOCK_OWNER_SEED || !MOCK_CONTRACT_ADDRESS || MOCK_RECIPIENTS.length === 0)) {
@@ -112,12 +114,17 @@ async function fetchPaywindow(id) {
     };
   }
 
-  const headers = { 'Content-Type': 'application/json' };
-  if (NMKR_STUDIO_KEY) headers['Authorization'] = `Bearer ${NMKR_STUDIO_KEY}`;
+  // NMKR Studio: GET {base}/GetMidnightPaywindowDetails?reservationid={id}
+  // (preprod or mainnet, depending on NMKR_STUDIO_URL — see env docs above).
+  const headers = {
+    accept: 'text/plain',
+    Authorization: `Bearer ${NMKR_STUDIO_KEY}`,
+  };
+  const url = `${NMKR_STUDIO_URL}/GetMidnightPaywindowDetails?reservationid=${encodeURIComponent(id)}`;
 
   let r;
   try {
-    r = await fetch(`${NMKR_STUDIO_URL.replace(/\/$/, '')}/paywindow/${encodeURIComponent(id)}`, { headers });
+    r = await fetch(url, { headers });
   } catch (err) {
     throw new HttpError(502, `cannot reach NMKR Studio: ${err.message}`);
   }
@@ -259,4 +266,5 @@ app.listen(PORT, () => {
   console.log(`NMKR Midnight Paywindow listening on http://localhost:${PORT}`);
   console.log(`  NMKR API : ${NMKR_API_URL}`);
   console.log(`  Studio   : ${PAYWINDOW_MOCK ? '[MOCK]' : NMKR_STUDIO_URL}`);
+  if (!PAYWINDOW_MOCK) console.log(`  Auth     : Bearer ${NMKR_STUDIO_KEY.slice(0, 6)}…`);
 });
