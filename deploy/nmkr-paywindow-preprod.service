@@ -1,7 +1,7 @@
 # /etc/systemd/system/nmkr-paywindow-preprod.service
 #
 # Bridge instance that talks to NMKR Studio Preprod and is exposed
-# behind https://midnight-paywindow-api.preprod.nmkr.io
+# behind https://midnight-paywindow.preprod.nmkr.io
 #
 # Place secrets (NMKR_STUDIO_API_KEY) in /etc/nmkr-paywindow/preprod.env,
 # never in this unit file. Example:
@@ -26,7 +26,6 @@ EnvironmentFile=/etc/nmkr-paywindow/preprod.env
 Environment=NMKR_NETWORK=preprod
 Environment=PORT=4100
 Environment=NMKR_API_URL=http://127.0.0.1:3002
-Environment=ALLOWED_ORIGIN=https://midnight-paywindow-api.preprod.nmkr.io
 ExecStart=/usr/bin/node server/server.js
 Restart=always
 RestartSec=3

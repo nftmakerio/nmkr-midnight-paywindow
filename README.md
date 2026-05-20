@@ -4,7 +4,8 @@ A single-shot NFT mint window for the [Midnight Network](https://midnight.networ
 designed to be opened in its own browser window via
 
 ```
-https://midnight-paywindow.nmkr.io/?id=<paywindowId>
+https://midnight-paywindow.nmkr.io/?id=<reservationId>          # mainnet
+https://midnight-paywindow.preprod.nmkr.io/?id=<reservationId>  # preprod
 ```
 
 The window auto-connects to a Midnight wallet (e.g. 1AM), builds an atomic
@@ -260,15 +261,17 @@ Recommended behaviour:
 ## Deployment
 
 The bridge runs as **two separate processes** on the same host — one
-per network — behind nginx, both managed by systemd. Ready-to-copy
-unit and nginx files live in [`deploy/`](deploy/).
+per network — behind nginx, both managed by systemd. Each process serves
+both the HTML page and the `/api/...` routes, so frontend and API share
+an origin and no CORS configuration is needed. Ready-to-copy unit and
+nginx files live in [`deploy/`](deploy/).
 
 ### Target topology
 
 | Host name | Network | Port (loopback) | systemd unit |
 |---|---|---|---|
-| `midnight-paywindow-api.preprod.nmkr.io` | preprod | `127.0.0.1:4100` | `nmkr-paywindow-preprod` |
-| `midnight-paywindow-api.nmkr.io`         | mainnet | `127.0.0.1:4101` | `nmkr-paywindow-mainnet` |
+| `midnight-paywindow.preprod.nmkr.io` | preprod | `127.0.0.1:4100` | `nmkr-paywindow-preprod` |
+| `midnight-paywindow.nmkr.io`         | mainnet | `127.0.0.1:4101` | `nmkr-paywindow-mainnet` |
 
 Each bridge talks to its own local `nmkr-midnight-api` (`:3002` for
 preprod, `:3003` for mainnet) — those are separate processes outside
@@ -280,8 +283,8 @@ Create two `A` (or `AAAA`) records pointing to the public IP of the
 host that runs the bridges:
 
 ```
-midnight-paywindow-api.preprod.nmkr.io   →  <server-ip>
-midnight-paywindow-api.nmkr.io           →  <server-ip>
+midnight-paywindow.preprod.nmkr.io   →  <server-ip>
+midnight-paywindow.nmkr.io           →  <server-ip>
 ```
 
 ### 2. Code + dependencies
@@ -327,8 +330,8 @@ sudo cp /opt/nmkr-midnight-paywindow/deploy/nginx-midnight-paywindow.conf \
         /etc/nginx/sites-available/midnight-paywindow
 sudo ln -s /etc/nginx/sites-available/midnight-paywindow /etc/nginx/sites-enabled/
 sudo certbot --nginx \
-  -d midnight-paywindow-api.preprod.nmkr.io \
-  -d midnight-paywindow-api.nmkr.io
+  -d midnight-paywindow.preprod.nmkr.io \
+  -d midnight-paywindow.nmkr.io
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -338,11 +341,15 @@ renewals nginx reloads automatically via the certbot cron hook.
 ### 6. Smoke test
 
 ```bash
-curl -i https://midnight-paywindow-api.preprod.nmkr.io/api/paywindow/<a-known-reservationid>
-curl -i https://midnight-paywindow-api.nmkr.io/api/paywindow/<a-known-reservationid>
+curl -i https://midnight-paywindow.preprod.nmkr.io/api/paywindow/<a-known-reservationid>
+curl -i https://midnight-paywindow.nmkr.io/api/paywindow/<a-known-reservationid>
 ```
 
 Both should return `200 application/json` with `{ ok: true, ... }`.
+
+Then open `https://midnight-paywindow.preprod.nmkr.io/?id=<reservationid>`
+in a browser with 1AM (or another Midnight wallet) installed to test the
+full flow end-to-end.
 
 ### Operational notes
 
@@ -350,9 +357,11 @@ Both should return `200 application/json` with `{ ok: true, ... }`.
   whatever the local `nmkr-midnight-api` instance talks to.
 - Never log the request body in `/api/build-mint` — it carries the
   owner seed in transit between Studio and this bridge.
-- `ALLOWED_ORIGIN` is set per unit to the API's own hostname. If you
-  embed the paywindow page on a different origin, add it (comma-
-  separated) to the unit's `ALLOWED_ORIGIN` line and reload.
+- `ALLOWED_ORIGIN` is unset by default — frontend and API share an
+  origin, so no CORS header is needed. If you embed the paywindow page
+  on a different origin (e.g. inside the NMKR Studio frontend in an
+  IFrame), add it (comma-separated) to the unit's environment and
+  reload.
 
 ---
 

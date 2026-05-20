@@ -1,7 +1,7 @@
 # /etc/systemd/system/nmkr-paywindow-mainnet.service
 #
 # Bridge instance that talks to NMKR Studio Mainnet and is exposed
-# behind https://midnight-paywindow-api.nmkr.io
+# behind https://midnight-paywindow.nmkr.io
 #
 # Place secrets (NMKR_STUDIO_API_KEY) in /etc/nmkr-paywindow/mainnet.env,
 # never in this unit file. Example:
@@ -26,7 +26,6 @@ EnvironmentFile=/etc/nmkr-paywindow/mainnet.env
 Environment=NMKR_NETWORK=mainnet
 Environment=PORT=4101
 Environment=NMKR_API_URL=http://127.0.0.1:3003
-Environment=ALLOWED_ORIGIN=https://midnight-paywindow-api.nmkr.io
 ExecStart=/usr/bin/node server/server.js
 Restart=always
 RestartSec=3
