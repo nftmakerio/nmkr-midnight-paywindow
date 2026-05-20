@@ -1,0 +1,42 @@
+# /etc/systemd/system/nmkr-paywindow-mainnet.service
+#
+# Bridge instance that talks to NMKR Studio Mainnet and is exposed
+# behind https://midnight-paywindow-api.nmkr.io
+#
+# Place secrets (NMKR_STUDIO_API_KEY) in /etc/nmkr-paywindow/mainnet.env,
+# never in this unit file. Example:
+#   NMKR_STUDIO_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#
+# Install:
+#   sudo cp deploy/nmkr-paywindow-mainnet.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nmkr-paywindow-mainnet
+
+[Unit]
+Description=NMKR Midnight Paywindow bridge (mainnet)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nmkr
+Group=nmkr
+WorkingDirectory=/opt/nmkr-midnight-paywindow
+EnvironmentFile=/etc/nmkr-paywindow/mainnet.env
+Environment=NMKR_NETWORK=mainnet
+Environment=PORT=4101
+Environment=NMKR_API_URL=http://127.0.0.1:3003
+Environment=ALLOWED_ORIGIN=https://midnight-paywindow-api.nmkr.io
+ExecStart=/usr/bin/node server/server.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/nmkr-paywindow
+StandardOutput=append:/var/log/nmkr-paywindow/mainnet.log
+StandardError=append:/var/log/nmkr-paywindow/mainnet.log
+
+[Install]
+WantedBy=multi-user.target

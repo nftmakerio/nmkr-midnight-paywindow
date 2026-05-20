@@ -16,11 +16,14 @@
 //
 // Env:
 //   PORT                       default 4100
+//   NMKR_NETWORK               preprod | mainnet — picks the Studio base URL.
+//                              default preprod
 //   NMKR_API_URL               default http://localhost:3002 (the local mint signer)
-//   NMKR_STUDIO_URL            base URL of NMKR Studio (no trailing slash, no path).
-//                              default https://studio-api.preprod.nmkr.io/v2
-//                              for mainnet use https://studio-api.nmkr.io/v2
+//   NMKR_STUDIO_URL            explicit override for the Studio base URL.
+//                              normally not needed — set NMKR_NETWORK instead.
 //   NMKR_STUDIO_API_KEY        bearer token for NMKR Studio (required unless PAYWINDOW_MOCK=1)
+//   ALLOWED_ORIGIN             optional CORS allow-list (comma-separated).
+//                              omit to allow same-origin only (no Access-Control header).
 //   PAYWINDOW_MOCK=1           dev mode: serve a synthetic paywindow built from
 //                              OWNER_SEED + CONTRACT_ADDRESS + RECIPIENT_* env vars
 // ============================================================
@@ -32,10 +35,21 @@ import path from 'node:path';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT              = Number(process.env.PORT) || 4100;
+const NMKR_NETWORK      = (process.env.NMKR_NETWORK || 'preprod').toLowerCase();
 const NMKR_API_URL      = process.env.NMKR_API_URL      || 'http://localhost:3002';
-const NMKR_STUDIO_URL   = (process.env.NMKR_STUDIO_URL || 'https://studio-api.preprod.nmkr.io/v2').replace(/\/$/, '');
 const NMKR_STUDIO_KEY   = process.env.NMKR_STUDIO_API_KEY || '';
 const PAYWINDOW_MOCK    = process.env.PAYWINDOW_MOCK === '1';
+const ALLOWED_ORIGINS   = (process.env.ALLOWED_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
+
+const STUDIO_DEFAULTS = {
+  preprod: 'https://studio-api.preprod.nmkr.io/v2',
+  mainnet: 'https://studio-api.nmkr.io/v2',
+};
+if (!STUDIO_DEFAULTS[NMKR_NETWORK] && !process.env.NMKR_STUDIO_URL) {
+  console.error(`FATAL: NMKR_NETWORK="${NMKR_NETWORK}" is not recognised. Use "preprod" or "mainnet", or set NMKR_STUDIO_URL explicitly.`);
+  process.exit(1);
+}
+const NMKR_STUDIO_URL = (process.env.NMKR_STUDIO_URL || STUDIO_DEFAULTS[NMKR_NETWORK]).replace(/\/$/, '');
 
 const MOCK_OWNER_SEED       = process.env.OWNER_SEED       || '';
 const MOCK_CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS || '';
@@ -168,6 +182,20 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 app.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store, max-age=0'); next(); });
 
+// Optional CORS — only emitted when the request's Origin is on the
+// configured allow-list. Set ALLOWED_ORIGIN=https://example.com,https://other.com.
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  }
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+});
+
 // Catch-all JSON 404 for /api/* so a missing route never returns the SPA's HTML.
 // (Must be registered AFTER all real /api routes — done below.)
 
@@ -264,7 +292,9 @@ app.all('/api/*splat', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`NMKR Midnight Paywindow listening on http://localhost:${PORT}`);
-  console.log(`  NMKR API : ${NMKR_API_URL}`);
+  console.log(`  Network  : ${PAYWINDOW_MOCK ? '[MOCK]' : NMKR_NETWORK}`);
   console.log(`  Studio   : ${PAYWINDOW_MOCK ? '[MOCK]' : NMKR_STUDIO_URL}`);
+  console.log(`  NMKR API : ${NMKR_API_URL}`);
   if (!PAYWINDOW_MOCK) console.log(`  Auth     : Bearer ${NMKR_STUDIO_KEY.slice(0, 6)}…`);
+  if (ALLOWED_ORIGINS.length) console.log(`  CORS     : ${ALLOWED_ORIGINS.join(', ')}`);
 });

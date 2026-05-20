@@ -108,21 +108,17 @@ without touching the real Studio:
 
 ## Running against real NMKR Studio
 
-Preprod (default):
+Pick the network with `NMKR_NETWORK` (the bridge will use the right
+Studio base URL automatically):
 
 ```bash
-PORT=4100 \
-NMKR_API_URL=http://127.0.0.1:3002 \
+# Preprod (default)
+NMKR_NETWORK=preprod \
 NMKR_STUDIO_API_KEY=<bearer-token> \
 npm start
-```
 
-Mainnet — override the base URL:
-
-```bash
-PORT=4100 \
-NMKR_API_URL=http://127.0.0.1:3002 \
-NMKR_STUDIO_URL=https://studio-api.nmkr.io/v2 \
+# Mainnet
+NMKR_NETWORK=mainnet \
 NMKR_STUDIO_API_KEY=<bearer-token> \
 npm start
 ```
@@ -140,8 +136,10 @@ response to match [`PaywindowData`](csharp/PaywindowModels.cs).
 |---|---|---|
 | `PORT` | `4100` | HTTP port the bridge listens on |
 | `NMKR_API_URL` | `http://localhost:3002` | URL of the `nmkr-midnight-api` instance that does the actual proving + signing |
-| `NMKR_STUDIO_URL` | `https://studio-api.preprod.nmkr.io/v2` | Base URL of NMKR Studio. Set to `https://studio-api.nmkr.io/v2` for mainnet. |
+| `NMKR_NETWORK` | `preprod` | `preprod` or `mainnet` — selects the default Studio base URL. |
+| `NMKR_STUDIO_URL` | derived from `NMKR_NETWORK` | Explicit override for the Studio base URL. Normally not needed. |
 | `NMKR_STUDIO_API_KEY` | — | Bearer token sent to NMKR Studio (required unless `PAYWINDOW_MOCK=1`) |
+| `ALLOWED_ORIGIN` | — | Comma-separated list of allowed CORS origins. Omit for same-origin only. |
 | `PAYWINDOW_MOCK` | — | Set to `1` to bypass NMKR Studio (dev mode) |
 | `OWNER_SEED` | — | (mock mode) seed used to sign the mint |
 | `CONTRACT_ADDRESS` | — | (mock mode) contract to mint into |
@@ -259,20 +257,102 @@ Recommended behaviour:
 
 ---
 
-## Deployment notes
+## Deployment
 
-The bridge is a tiny stateless Node process. Typical setup on a single
-host:
+The bridge runs as **two separate processes** on the same host — one
+per network — behind nginx, both managed by systemd. Ready-to-copy
+unit and nginx files live in [`deploy/`](deploy/).
 
-- `nmkr-midnight-api` on `127.0.0.1:3002`
-- This bridge on `127.0.0.1:4100`
-- nginx terminates TLS for `midnight-paywindow.nmkr.io` and reverse-proxies
-  to `127.0.0.1:4100`
-- Both Node processes managed by `systemd` (or `pm2`)
-- Outbound access to NMKR Studio and to the Midnight node / indexer
+### Target topology
 
-Never log the request body in `/api/build-mint` — it contains the owner
-seed in transit.
+| Host name | Network | Port (loopback) | systemd unit |
+|---|---|---|---|
+| `midnight-paywindow-api.preprod.nmkr.io` | preprod | `127.0.0.1:4100` | `nmkr-paywindow-preprod` |
+| `midnight-paywindow-api.nmkr.io`         | mainnet | `127.0.0.1:4101` | `nmkr-paywindow-mainnet` |
+
+Each bridge talks to its own local `nmkr-midnight-api` (`:3002` for
+preprod, `:3003` for mainnet) — those are separate processes outside
+this repo.
+
+### 1. DNS
+
+Create two `A` (or `AAAA`) records pointing to the public IP of the
+host that runs the bridges:
+
+```
+midnight-paywindow-api.preprod.nmkr.io   →  <server-ip>
+midnight-paywindow-api.nmkr.io           →  <server-ip>
+```
+
+### 2. Code + dependencies
+
+```bash
+sudo useradd --system --home /opt/nmkr-midnight-paywindow --shell /usr/sbin/nologin nmkr
+sudo git clone https://github.com/nftmakerio/nmkr-midnight-paywindow.git /opt/nmkr-midnight-paywindow
+sudo chown -R nmkr:nmkr /opt/nmkr-midnight-paywindow
+sudo -u nmkr -H bash -c 'cd /opt/nmkr-midnight-paywindow && npm ci --omit=dev'
+sudo mkdir -p /var/log/nmkr-paywindow /etc/nmkr-paywindow
+sudo chown -R nmkr:nmkr /var/log/nmkr-paywindow
+```
+
+### 3. Secrets (NMKR Studio bearer tokens)
+
+```bash
+sudo cp /opt/nmkr-midnight-paywindow/deploy/env.example /etc/nmkr-paywindow/preprod.env
+sudo cp /opt/nmkr-midnight-paywindow/deploy/env.example /etc/nmkr-paywindow/mainnet.env
+sudo vi /etc/nmkr-paywindow/preprod.env   # fill in NMKR_STUDIO_API_KEY
+sudo vi /etc/nmkr-paywindow/mainnet.env
+sudo chown root:nmkr /etc/nmkr-paywindow/*.env
+sudo chmod 640 /etc/nmkr-paywindow/*.env
+```
+
+### 4. systemd units
+
+```bash
+sudo cp /opt/nmkr-midnight-paywindow/deploy/nmkr-paywindow-preprod.service /etc/systemd/system/
+sudo cp /opt/nmkr-midnight-paywindow/deploy/nmkr-paywindow-mainnet.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now nmkr-paywindow-preprod nmkr-paywindow-mainnet
+sudo systemctl status  nmkr-paywindow-preprod nmkr-paywindow-mainnet
+```
+
+Logs land in `/var/log/nmkr-paywindow/{preprod,mainnet}.log`. Tail them
+with `journalctl -u nmkr-paywindow-preprod -f` while testing.
+
+### 5. nginx + TLS
+
+```bash
+sudo apt install -y nginx certbot python3-certbot-nginx
+sudo cp /opt/nmkr-midnight-paywindow/deploy/nginx-midnight-paywindow.conf \
+        /etc/nginx/sites-available/midnight-paywindow
+sudo ln -s /etc/nginx/sites-available/midnight-paywindow /etc/nginx/sites-enabled/
+sudo certbot --nginx \
+  -d midnight-paywindow-api.preprod.nmkr.io \
+  -d midnight-paywindow-api.nmkr.io
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+certbot will fill the `ssl_certificate*` paths into the site config; on
+renewals nginx reloads automatically via the certbot cron hook.
+
+### 6. Smoke test
+
+```bash
+curl -i https://midnight-paywindow-api.preprod.nmkr.io/api/paywindow/<a-known-reservationid>
+curl -i https://midnight-paywindow-api.nmkr.io/api/paywindow/<a-known-reservationid>
+```
+
+Both should return `200 application/json` with `{ ok: true, ... }`.
+
+### Operational notes
+
+- Outbound HTTPS must be open to `studio-api.{,preprod.}nmkr.io` and to
+  whatever the local `nmkr-midnight-api` instance talks to.
+- Never log the request body in `/api/build-mint` — it carries the
+  owner seed in transit between Studio and this bridge.
+- `ALLOWED_ORIGIN` is set per unit to the API's own hostname. If you
+  embed the paywindow page on a different origin, add it (comma-
+  separated) to the unit's `ALLOWED_ORIGIN` line and reload.
 
 ---
 

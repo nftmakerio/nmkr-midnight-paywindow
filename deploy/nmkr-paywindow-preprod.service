@@ -1,0 +1,43 @@
+# /etc/systemd/system/nmkr-paywindow-preprod.service
+#
+# Bridge instance that talks to NMKR Studio Preprod and is exposed
+# behind https://midnight-paywindow-api.preprod.nmkr.io
+#
+# Place secrets (NMKR_STUDIO_API_KEY) in /etc/nmkr-paywindow/preprod.env,
+# never in this unit file. Example:
+#   NMKR_STUDIO_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#
+# Install:
+#   sudo cp deploy/nmkr-paywindow-preprod.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nmkr-paywindow-preprod
+
+[Unit]
+Description=NMKR Midnight Paywindow bridge (preprod)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nmkr
+Group=nmkr
+WorkingDirectory=/opt/nmkr-midnight-paywindow
+EnvironmentFile=/etc/nmkr-paywindow/preprod.env
+Environment=NMKR_NETWORK=preprod
+Environment=PORT=4100
+Environment=NMKR_API_URL=http://127.0.0.1:3002
+Environment=ALLOWED_ORIGIN=https://midnight-paywindow-api.preprod.nmkr.io
+ExecStart=/usr/bin/node server/server.js
+Restart=always
+RestartSec=3
+# Lock down the unit a little
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/nmkr-paywindow
+StandardOutput=append:/var/log/nmkr-paywindow/preprod.log
+StandardError=append:/var/log/nmkr-paywindow/preprod.log
+
+[Install]
+WantedBy=multi-user.target
