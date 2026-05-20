@@ -256,7 +256,26 @@ app.post('/api/build-mint', async (req, res) => {
     }
 
     const j = await readJsonOrThrow(r, 'nmkr-midnight-api');
-    if (!r.ok) throw new HttpError(r.status, j?.error || `nmkr-midnight-api HTTP ${r.status}`);
+    if (!r.ok) {
+      // Log the full upstream response so the failure is visible in
+      // bridge logs even when the browser only sees a short message.
+      console.error('[/api/build-mint] nmkr-midnight-api error', {
+        status: r.status,
+        body: j,
+        request: {
+          contractAddress: body.contractAddress,
+          name: body.name,
+          toShieldedAddress: body.toShieldedAddress?.slice(0, 35) + '…',
+          nightRecipients: body.nightRecipients.map(x => ({
+            addr: x.address.slice(0, 35) + '…',
+            amountRaw: x.amountRaw,
+          })),
+        },
+      });
+      // Pass through whatever the upstream said (incl. stack snippet) so
+      // the frontend can show the real cause.
+      throw new HttpError(r.status, j?.error || `nmkr-midnight-api HTTP ${r.status}`, j?.stack);
+    }
 
     res.json({
       unsealedTxHex: j.unsealedTxHex,

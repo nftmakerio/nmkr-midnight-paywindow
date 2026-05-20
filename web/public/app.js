@@ -62,9 +62,23 @@ async function fetchJson(url, init) {
   try { data = JSON.parse(text); }
   catch (err) { throw new Error(`Malformed JSON from ${url}: ${err.message}`); }
   if (!res.ok) {
-    throw new Error(data?.error || `HTTP ${res.status} from ${url}`);
+    // Surface server-side details (e.g. a stack snippet) so we don't drop
+    // crucial context like "buyer address decode failed (network=preprod)".
+    const err = new Error(data?.error || `HTTP ${res.status} from ${url}`);
+    err.details = data?.details ?? data?.stack ?? null;
+    err.status  = res.status;
+    throw err;
   }
   return data;
+}
+
+// Pull the bech32m network prefix out of a Midnight address. Returns
+// e.g. "preview", "preprod", "mainnet", or null if the address is malformed.
+function addressNetwork(addr) {
+  if (!addr) return null;
+  // mn_addr_<network>1...  /  mn_shield-addr_<network>1...
+  const m = /^mn_(?:shield-)?addr_([a-z0-9]+)1/.exec(addr);
+  return m ? m[1] : null;
 }
 
 function findProviders() {
@@ -118,6 +132,26 @@ async function connectWallet() {
     connectedApi = await pick.api.connect(NETWORK);
     const s = await connectedApi.getShieldedAddresses();
     shieldedAddr = s.shieldedAddress;
+
+    // Verify the wallet is actually on the expected network — if the user
+    // has 1AM set to e.g. preprod while the paywindow targets preview,
+    // every later API call will fail with a confusing decode error. Catch
+    // that here with a clear message.
+    const walletNet = addressNetwork(shieldedAddr);
+    console.log('[paywindow] wallet connected', {
+      provider: pick.name,
+      requestedNetwork: NETWORK,
+      walletAddressNetwork: walletNet,
+      shieldedAddress: shieldedAddr,
+    });
+    if (walletNet && walletNet !== NETWORK) {
+      setStatus(
+        `Wallet is on "${walletNet}" but this paywindow targets "${NETWORK}". ` +
+        `Switch your Midnight wallet to ${NETWORK} and reload.`,
+        true,
+      );
+      return;
+    }
     walletOk = true;
     refreshButton();
   } catch (err) {
@@ -149,7 +183,22 @@ async function mint() {
     setStatus('Mint successful — decrypting NFT…');
     await revealNft(built);
   } catch (err) {
-    setStatus(`Error: ${err.message ?? err}`, true);
+    // Print everything we know about the failure to the console so the
+    // user can copy/paste the full chain — message + status + details.
+    console.error('[paywindow] mint failed', err, {
+      message: err?.message,
+      status: err?.status,
+      details: err?.details,
+      shieldedAddress: shieldedAddr,
+      walletAddressNetwork: addressNetwork(shieldedAddr),
+      targetNetwork: NETWORK,
+    });
+    let msg = `Error: ${err.message ?? err}`;
+    if (err?.details) {
+      const det = Array.isArray(err.details) ? err.details.join('\n') : String(err.details);
+      msg += `\n\n${det}`;
+    }
+    setStatus(msg, true);
     $('mintBtn').disabled = false;
   }
 }
