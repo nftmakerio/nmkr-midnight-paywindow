@@ -266,6 +266,68 @@ app.get('/api/health', async (_req, res) => {
 // 1) Pre-flight: validate the paywindow id without exposing any
 //    sensitive data. Used by the frontend on page load to fail fast
 //    if the link is bad/expired.
+// Resolve a NMKR Studio project UID into a reservation id by asking
+// Studio for the next random payment address. The response contains
+// paymentAddressId — that's what GetMidnightPaywindowDetails wants as
+// the reservationid. Returns errors verbatim from Studio so the user
+// sees e.g. "Sorry, no more NFTs available." if the drop is sold out.
+app.get('/api/reservation-from-project/:projectuid', async (req, res) => {
+  try {
+    const { projectuid } = req.params;
+    if (!projectuid) throw new HttpError(400, 'projectuid is required');
+
+    if (PAYWINDOW_MOCK) {
+      return res.json({
+        ok: true,
+        reservationid: `mock-${projectuid}`,
+        paymentAddress: '0xmock-address',
+        currency: 'NIGHT',
+      });
+    }
+
+    const headers = { accept: 'text/plain', Authorization: `Bearer ${NMKR_STUDIO_KEY}` };
+    const url = `${NMKR_STUDIO_URL}/GetPaymentAddressForRandomNftSale/${encodeURIComponent(projectuid)}/1?blockchain=Midnight`;
+
+    let r;
+    try {
+      r = await fetch(url, { headers });
+    } catch (err) {
+      throw new HttpError(502, `cannot reach NMKR Studio: ${err.message}`);
+    }
+
+    // Try to parse the response body as JSON; many NMKR errors come back
+    // with a structured body even at 4xx.
+    let body;
+    try { body = await readJsonOrThrow(r, 'NMKR Studio'); }
+    catch (err) {
+      if (r.status === 401 || r.status === 403) {
+        throw new HttpError(502, `NMKR Studio rejected the bridge credentials (HTTP ${r.status}) — check NMKR_STUDIO_API_KEY`);
+      }
+      throw err;
+    }
+
+    if (!r.ok) {
+      const msg = body?.errorMessage ?? body?.message ?? body?.error ?? `NMKR Studio HTTP ${r.status}`;
+      console.error('[/api/reservation-from-project] Studio error', { projectuid, status: r.status, body });
+      throw new HttpError(r.status, msg, body);
+    }
+    if (!body?.paymentAddressId) {
+      throw new HttpError(502, `NMKR Studio response missing paymentAddressId. Got: ${JSON.stringify(body).slice(0, 200)}`);
+    }
+
+    res.json({
+      ok: true,
+      reservationid: String(body.paymentAddressId),
+      paymentAddress: body.paymentAddress,
+      expires: body.expires,
+      currency: body.currency,
+      priceInNight: body.priceInNight,
+      priceInEur: body.priceInEur,
+      priceInUsd: body.priceInUsd,
+    });
+  } catch (err) { sendError(res, err); }
+});
+
 app.get('/api/paywindow/:id', async (req, res) => {
   try {
     const pw = await fetchPaywindow(req.params.id);

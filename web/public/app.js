@@ -16,7 +16,15 @@ const NIGHT_TOKEN = '00000000000000000000000000000000000000000000000000000000000
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
-const PAYWINDOW_ID = params.get('id');
+// Two ways to open the paywindow:
+//   ?id=<reservationid>     → direct (skip lookup)
+//   ?projectuid=<uid>       → ask Studio for the next available reservation,
+//                             use its paymentAddressId as reservationid
+const RAW_ID      = params.get('id');
+const PROJECT_UID = params.get('projectuid');
+// The id we actually use everywhere — set either from RAW_ID directly
+// or resolved from PROJECT_UID via /api/reservation-from-project.
+let RESERVATION_ID = RAW_ID;
 
 const setStatus = (msg, isError = false) => {
   const el = $('status');
@@ -42,7 +50,6 @@ let shieldedAddr    = null;
 let unshieldedAddr  = null;
 let paywindowOk     = false;
 let walletOk        = false;
-let backendOk       = false;
 let paywindowInfo   = null;   // pre-flight response with recipients + totals
 
 // ------------------------------------------------------------
@@ -130,72 +137,75 @@ function findProviders() {
 }
 
 function refreshButton() {
-  $('mintBtn').disabled = !(paywindowOk && walletOk && backendOk);
-  if (paywindowOk && walletOk && backendOk) setStatus('Ready to mint.');
+  // Mint button only needs the paywindow data and a connected wallet.
+  // The health check is advisory — pre-flight success already proves the
+  // bridge can talk to Studio. nmkr-midnight-api reachability surfaces at
+  // mint time anyway with a meaningful error in the timeline.
+  $('mintBtn').disabled = !(paywindowOk && walletOk);
+  if (paywindowOk && walletOk) setStatus('Ready to mint.');
 }
 
 // ------------------------------------------------------------
-// Health check: probes the bridge's /api/health, which in turn
-// probes nmkr-midnight-api and NMKR Studio. Fails fast with a clear
-// message if any dependency is unreachable or misconfigured.
+// Advisory health check — logs the bridge's view of nmkr-midnight-api +
+// Studio to the console for diagnostics. It does NOT block the mint
+// button: the pre-flight (validatePaywindow) is the real readiness
+// signal, and any backend issue that affects minting will surface
+// during the flow with a meaningful error in the timeline.
 // ------------------------------------------------------------
 async function checkBackends() {
-  let info;
   try {
-    info = await fetchJson(`${API}/health`);
-  } catch (err) {
-    // fetchJson throws on !res.ok — but our health endpoint returns the
-    // diagnostic body even at 503. Re-fetch raw to get it.
-    try {
-      const raw = await fetch(`${API}/health`);
-      info = await raw.json();
-    } catch {
-      setTitle('Service unavailable');
-      setStatus(`Cannot reach the paywindow backend: ${err.message}`, true);
-      return;
+    const raw = await fetch(`${API}/health`);
+    const info = await raw.json();
+    console.log('[paywindow] health', info);
+    // Only escalate the explicit case where the API runs on the wrong
+    // Midnight network — that's a configuration mismatch that the user
+    // CAN fix and pre-flight wouldn't catch.
+    if (info.nmkrMidnightApi?.ok &&
+        info.nmkrMidnightApi?.network &&
+        info.nmkrMidnightApi.network !== NETWORK) {
+      console.warn(
+        `[paywindow] Midnight API runs on "${info.nmkrMidnightApi.network}" ` +
+        `but this paywindow targets "${NETWORK}".`,
+      );
     }
+  } catch (err) {
+    console.warn('[paywindow] health check failed:', err);
   }
-  console.log('[paywindow] health', info);
-
-  const problems = [];
-  if (!info.nmkrMidnightApi?.ok) {
-    problems.push(`Midnight API: ${info.nmkrMidnightApi?.error ?? 'unreachable'}`);
-  } else if (info.nmkrMidnightApi?.network && info.nmkrMidnightApi.network !== NETWORK) {
-    problems.push(
-      `Midnight API is running on "${info.nmkrMidnightApi.network}" ` +
-      `but this paywindow targets "${NETWORK}". Set MIDNIGHT_NETWORK=${NETWORK} on the API service.`,
-    );
-  }
-  if (!info.nmkrStudio?.ok) {
-    problems.push(`NMKR Studio: ${info.nmkrStudio?.error ?? 'unreachable'}`);
-  }
-
-  if (problems.length) {
-    setTitle('Service unavailable');
-    setStatus(problems.join('\n'), true);
-    return;
-  }
-  backendOk = true;
-  refreshButton();
 }
 
 // ------------------------------------------------------------
 // Pre-flight: validate the id against the bridge before doing anything else.
 // ------------------------------------------------------------
 async function validatePaywindow() {
-  if (!PAYWINDOW_ID) {
+  if (!RAW_ID && !PROJECT_UID) {
     setTitle('Invalid link');
-    setStatus('Missing ?id=… parameter in the URL.', true);
+    setStatus('Missing ?id=… or ?projectuid=… parameter in the URL.', true);
     return;
   }
   try {
-    const info = await fetchJson(`${API}/paywindow/${encodeURIComponent(PAYWINDOW_ID)}`);
+    // Step 0 (optional): resolve project UID into a fresh reservation id
+    // by asking NMKR Studio for the next available random NFT.
+    if (!RESERVATION_ID && PROJECT_UID) {
+      setStatus('Reserving an NFT from the drop …');
+      const r = await fetchJson(`${API}/reservation-from-project/${encodeURIComponent(PROJECT_UID)}`);
+      RESERVATION_ID = r.reservationid;
+      console.log('[paywindow] resolved project UID to reservation', {
+        projectUid: PROJECT_UID,
+        reservationid: RESERVATION_ID,
+        paymentAddress: r.paymentAddress,
+        expires: r.expires,
+        currency: r.currency,
+      });
+    }
+
+    const info = await fetchJson(`${API}/paywindow/${encodeURIComponent(RESERVATION_ID)}`);
     paywindowOk = info.ok === true;
     paywindowInfo = info;
     $('price').textContent = formatNight(info.totalNightRaw);
     refreshButton();
   } catch (err) {
     setTitle('Cannot load paywindow');
+    // Surface the Studio error message verbatim — e.g. "no more NFTs"
     setStatus(err.message, true);
   }
 }
@@ -286,7 +296,7 @@ async function mint() {
     const mintBuildPromise = fetchJson(`${API}/build-mint`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: PAYWINDOW_ID, buyerShieldedAddress: shieldedAddr }),
+      body: JSON.stringify({ id: RESERVATION_ID, buyerShieldedAddress: shieldedAddr }),
     });
 
     setStep('start', 'done', '');
@@ -324,7 +334,7 @@ async function mint() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: PAYWINDOW_ID,
+          id: RESERVATION_ID,
           buyerUnshieldedAddress: unshieldedAddr,
           maxWaitMs: 120_000,
         }),
@@ -379,7 +389,7 @@ async function revealNft(built) {
   const meta = await fetchJson(`${API}/reveal-metadata`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: PAYWINDOW_ID }),
+    body: JSON.stringify({ id: RESERVATION_ID }),
   });
 
   $('nftImage').src = ipfsToHttps(meta.image);
