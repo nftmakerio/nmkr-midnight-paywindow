@@ -304,22 +304,51 @@ async function mint() {
     // Step 2: NIGHT transfer
     if (hasPayment) {
       setStep('night', 'active', 'waiting for wallet approval …');
-      const outputs = recipients.map(r => ({
-        kind: 'unshielded',
+      // Ask 1AM itself what shape it wants — hintUsage is in the
+      // exported method list and the name strongly suggests
+      // self-documentation. Log it once for diagnosis.
+      try {
+        const hint = await connectedApi.hintUsage?.('makeTransfer');
+        console.log('[paywindow] connectedApi.hintUsage("makeTransfer") =>', hint);
+      } catch (hErr) {
+        try {
+          const hint = await connectedApi.hintUsage?.();
+          console.log('[paywindow] connectedApi.hintUsage() =>', hint);
+        } catch (hErr2) {
+          console.warn('[paywindow] hintUsage not callable:', hErr?.message ?? hErr);
+        }
+      }
+
+      const baseOutputs = recipients.map(r => ({
         type: NIGHT_TOKEN,
         value: BigInt(r.amountRaw),
         recipient: r.address,
       }));
-      // 1AM's makeTransfer signature differs between extension versions and
-      // is poorly documented. Try the known shapes one after the other; if
-      // all fail, dump the method source so we can see the real expected
-      // shape from the error message above the developer console.
+      const tokenTypeObj = { tag: 'unshielded', raw: NIGHT_TOKEN };
+
+      // 1AM's makeTransfer/makeIntent signature varies between versions
+      // and is undocumented. Try the plausible shapes; first that 1AM
+      // accepts wins. If all fail, dump diagnostics.
       const candidates = [
-        { label: '{desiredOutputs}', arg: { desiredOutputs: outputs } },
-        { label: 'bare array',       arg: outputs },
-        { label: '{outputs}',        arg: { outputs } },
-        { label: '{transfers}',      arg: { transfers: outputs } },
+        // wrapper variants × inner format
+        { label: '{desiredOutputs}+kind:string',
+          arg: { desiredOutputs: baseOutputs.map(o => ({ kind: 'unshielded', ...o })) } },
+        { label: 'bare array+kind:string',
+          arg:                  baseOutputs.map(o => ({ kind: 'unshielded', ...o })) },
+        { label: '{desiredOutputs}+type:object',
+          arg: { desiredOutputs: baseOutputs.map(o => ({ ...o, type: tokenTypeObj })) } },
+        { label: 'bare array+type:object',
+          arg:                  baseOutputs.map(o => ({ ...o, type: tokenTypeObj })) },
+        { label: '{outputs}',  arg: { outputs:  baseOutputs.map(o => ({ kind: 'unshielded', ...o })) } },
+        { label: '{transfers}', arg: { transfers: baseOutputs.map(o => ({ kind: 'unshielded', ...o })) } },
+        // grouped by token type with inner recipients array (some midnight wallet APIs use this)
+        { label: '{desiredOutputs}+grouped',
+          arg: { desiredOutputs: [{
+            type: tokenTypeObj,
+            recipients: recipients.map(r => ({ address: r.address, value: BigInt(r.amountRaw) })),
+          }] } },
       ];
+
       let transferResult, lastErr;
       for (const c of candidates) {
         try {
