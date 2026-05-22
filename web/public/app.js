@@ -304,13 +304,24 @@ async function mint() {
     // Step 2: NIGHT transfer
     if (hasPayment) {
       setStep('night', 'active', 'waiting for wallet approval …');
-      const transferSpecs = recipients.map(r => ({
+      const desiredOutputs = recipients.map(r => ({
         kind: 'unshielded',
         type: NIGHT_TOKEN,
         value: BigInt(r.amountRaw),
         recipient: r.address,
       }));
-      const transferResult = await connectedApi.makeTransfer(transferSpecs);
+      // 1AM expects { desiredOutputs: [...] }. Older builds also accepted
+      // the bare array — try the new shape first, fall back to the array
+      // form so this works against both extension versions.
+      let transferResult;
+      try {
+        transferResult = await connectedApi.makeTransfer({ desiredOutputs });
+      } catch (err) {
+        const msg = String(err?.message ?? err);
+        if (!/desiredOutputs|payload/i.test(msg)) throw err;
+        console.warn('[paywindow] makeTransfer({desiredOutputs}) failed, retrying with bare array:', msg);
+        transferResult = await connectedApi.makeTransfer(desiredOutputs);
+      }
       const dappTxId = transferResult?.tx_id ?? transferResult?.txHash ?? null;
       if (transferResult?.tx || transferResult?.transaction) {
         // Wallet didn't auto-submit (rare) — submit ourselves
