@@ -82,6 +82,15 @@ function addressNetwork(addr) {
   return m ? m[1] : null;
 }
 
+// Rewrite ipfs://<hash>[/<path>] to the NMKR HTTPS gateway so browsers
+// (Chrome, Brave with native ipfs disabled, …) can fetch it. Anything
+// that isn't an ipfs:// URL is returned unchanged.
+const IPFS_GATEWAY = 'https://c-ipfs-gw.nmkr.io/ipfs/';
+function ipfsToHttps(uri) {
+  if (typeof uri !== 'string' || !uri.startsWith('ipfs://')) return uri;
+  return IPFS_GATEWAY + uri.slice('ipfs://'.length);
+}
+
 function findProviders() {
   const root = window.midnight;
   if (!root) return [];
@@ -256,14 +265,14 @@ async function revealNft(built) {
     body: JSON.stringify({ id: PAYWINDOW_ID }),
   });
 
-  $('nftImage').src = meta.image;
+  $('nftImage').src = ipfsToHttps(meta.image);
   $('nftImage').alt = meta.name;
   $('nftName').textContent = meta.name;
   $('nftTokenId').textContent = built.tokenId ?? '?';
   $('nftContract').textContent = (built.contractAddress || '').slice(0, 20) + '…';
   $('nftDesc').textContent = meta.description || '';
   if (meta.uri) {
-    $('nftUri').href = meta.uri;
+    $('nftUri').href = ipfsToHttps(meta.uri);
     $('nftUri').style.display = '';
   } else {
     $('nftUri').style.display = 'none';
