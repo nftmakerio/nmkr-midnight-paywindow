@@ -304,71 +304,19 @@ async function mint() {
     // Step 2: NIGHT transfer
     if (hasPayment) {
       setStep('night', 'active', 'waiting for wallet approval …');
-      // Ask 1AM itself what shape it wants — hintUsage is in the
-      // exported method list and the name strongly suggests
-      // self-documentation. Log it once for diagnosis.
-      try {
-        const hint = await connectedApi.hintUsage?.('makeTransfer');
-        console.log('[paywindow] connectedApi.hintUsage("makeTransfer") =>', hint);
-      } catch (hErr) {
-        try {
-          const hint = await connectedApi.hintUsage?.();
-          console.log('[paywindow] connectedApi.hintUsage() =>', hint);
-        } catch (hErr2) {
-          console.warn('[paywindow] hintUsage not callable:', hErr?.message ?? hErr);
-        }
-      }
-
-      const baseOutputs = recipients.map(r => ({
+      // Same call shape as the working dapp-demo Button 6 — bare array
+      // of { kind, type, value, recipient } specs. 1AM auto-balances,
+      // auto-signs and auto-submits; we get back { tx_id } pointing to
+      // a 1AM DApp record (the real Sent UNSHIELDED tx has a different
+      // hash and only shows up in the address history a few seconds
+      // later, which is what the next step waits for).
+      const transferSpecs = recipients.map(r => ({
+        kind: 'unshielded',
         type: NIGHT_TOKEN,
         value: BigInt(r.amountRaw),
         recipient: r.address,
       }));
-      const tokenTypeObj = { tag: 'unshielded', raw: NIGHT_TOKEN };
-
-      // 1AM's makeTransfer/makeIntent signature varies between versions
-      // and is undocumented. Try the plausible shapes; first that 1AM
-      // accepts wins. If all fail, dump diagnostics.
-      const candidates = [
-        // wrapper variants × inner format
-        { label: '{desiredOutputs}+kind:string',
-          arg: { desiredOutputs: baseOutputs.map(o => ({ kind: 'unshielded', ...o })) } },
-        { label: 'bare array+kind:string',
-          arg:                  baseOutputs.map(o => ({ kind: 'unshielded', ...o })) },
-        { label: '{desiredOutputs}+type:object',
-          arg: { desiredOutputs: baseOutputs.map(o => ({ ...o, type: tokenTypeObj })) } },
-        { label: 'bare array+type:object',
-          arg:                  baseOutputs.map(o => ({ ...o, type: tokenTypeObj })) },
-        { label: '{outputs}',  arg: { outputs:  baseOutputs.map(o => ({ kind: 'unshielded', ...o })) } },
-        { label: '{transfers}', arg: { transfers: baseOutputs.map(o => ({ kind: 'unshielded', ...o })) } },
-        // grouped by token type with inner recipients array (some midnight wallet APIs use this)
-        { label: '{desiredOutputs}+grouped',
-          arg: { desiredOutputs: [{
-            type: tokenTypeObj,
-            recipients: recipients.map(r => ({ address: r.address, value: BigInt(r.amountRaw) })),
-          }] } },
-      ];
-
-      let transferResult, lastErr;
-      for (const c of candidates) {
-        try {
-          console.log(`[paywindow] makeTransfer trying shape: ${c.label}`);
-          transferResult = await connectedApi.makeTransfer(c.arg);
-          console.log(`[paywindow] makeTransfer accepted shape: ${c.label}`);
-          break;
-        } catch (err) {
-          lastErr = err;
-          console.warn(`[paywindow] makeTransfer ${c.label} rejected:`, err?.message ?? err);
-        }
-      }
-      if (!transferResult) {
-        try {
-          console.error('[paywindow] makeTransfer source for diagnosis:',
-            connectedApi.makeTransfer?.toString?.()?.slice(0, 2000));
-          console.error('[paywindow] connectedApi keys:', Object.keys(connectedApi));
-        } catch {}
-        throw new Error(`1AM rejected every makeTransfer payload shape. Last error: ${lastErr?.message ?? lastErr}`);
-      }
+      const transferResult = await connectedApi.makeTransfer(transferSpecs);
       const dappTxId = transferResult?.tx_id ?? transferResult?.txHash ?? null;
       if (transferResult?.tx || transferResult?.transaction) {
         // Wallet didn't auto-submit (rare) — submit ourselves
