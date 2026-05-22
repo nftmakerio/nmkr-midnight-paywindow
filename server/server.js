@@ -269,11 +269,18 @@ app.get('/api/health', async (_req, res) => {
 app.get('/api/paywindow/:id', async (req, res) => {
   try {
     const pw = await fetchPaywindow(req.params.id);
+    // Recipients are public bech32m addresses + amounts — fine to expose
+    // to the browser so the wallet can build the NIGHT transfer locally.
+    // The owner seed and contract metadata stay server-side.
     res.json({
       ok: true,
       id: pw.id,
       hasPayment: Boolean(pw.recipients?.length),
       totalNightRaw: totalNightRaw(pw),
+      recipients: (pw.recipients || []).map(r => ({
+        address: r.address,
+        amountRaw: Number(r.amountRaw),
+      })),
     });
   } catch (err) { sendError(res, err); }
 });
@@ -290,6 +297,13 @@ app.post('/api/build-mint', async (req, res) => {
 
     const pw = await fetchPaywindow(id);
 
+    // NOTE: nightRecipients are intentionally NOT included here. The
+    // current nmkr-nft Compact contract does not declare unshieldedOutputs
+    // in its ContractCallPrototype, so any NIGHT outputs attached to the
+    // mint intent are silently dropped on-chain (verified via tx
+    // af894bc9d5b5… — Public Outputs: 0). The browser instead does a
+    // separate 1AM makeTransfer for the NIGHT before submitting this
+    // mint tx, using the recipient list returned by /api/paywindow/:id.
     const body = {
       ownerSeed: pw.ownerSeed,
       contractAddress: pw.contractAddress,
@@ -298,12 +312,6 @@ app.post('/api/build-mint', async (req, res) => {
       image: pw.nft.image || '',
       mediaType: pw.nft.mediaType || '',
       toShieldedAddress: buyerShieldedAddress,
-      // nmkr-midnight-api takes amountRaw as a BigInt-safe string,
-      // so stringify here while the rest of this codebase uses numbers.
-      nightRecipients: (pw.recipients || []).map(r => ({
-        address: r.address,
-        amountRaw: String(r.amountRaw),
-      })),
     };
 
     let r;
@@ -350,7 +358,60 @@ app.post('/api/build-mint', async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
-// 3) Reveal metadata — called only after a successful submit.
+// 3) Wait for the NIGHT transfer to be observed on-chain. The browser
+// calls this after 1AM's makeTransfer so we can confirm the payment
+// arrived BEFORE asking it to submit the mint tx. Polls the
+// nmkr-midnight-api address-history endpoint and looks for a sent
+// (or self) tx with outputs to every paywindow recipient.
+app.post('/api/wait-for-night-tx', async (req, res) => {
+  try {
+    const { id, buyerUnshieldedAddress, sinceMs = 60_000, maxWaitMs = 120_000 } = req.body ?? {};
+    if (!id) throw new HttpError(400, 'id is required');
+    if (!buyerUnshieldedAddress?.startsWith?.('mn_addr_')) {
+      throw new HttpError(400, 'buyerUnshieldedAddress is required (mn_addr_…)');
+    }
+    const pw = await fetchPaywindow(id);
+    const expectedRecipients = (pw.recipients || []).map(r => ({
+      address:   r.address,
+      amountRaw: BigInt(r.amountRaw),
+    }));
+    if (expectedRecipients.length === 0) {
+      return res.json({ ok: true, skipped: 'no payment configured for this paywindow' });
+    }
+
+    const since = Date.now() - sinceMs;
+    const deadline = Date.now() + maxWaitMs;
+    let attempt = 0;
+    while (Date.now() < deadline) {
+      attempt++;
+      try {
+        const r = await fetch(`${NMKR_API_URL}/api/address/${encodeURIComponent(buyerUnshieldedAddress)}/transactions`);
+        if (r.ok) {
+          const data = await r.json();
+          const txs = data.transactions || [];
+          const match = txs.find((t) => {
+            if (t.type !== 'sent' && t.type !== 'self') return false;
+            const ts = t.timestamp ? Date.parse(t.timestamp) : 0;
+            if (ts && ts < since - 60_000) return false;
+            return expectedRecipients.every(rcv =>
+              (t.allOutputs || []).some(o =>
+                o.to === rcv.address && BigInt(o.value) >= rcv.amountRaw));
+          });
+          if (match) {
+            console.log(`[wait-for-night-tx] match after ${attempt} attempts: ${match.txHash}`);
+            return res.json({ ok: true, txHash: match.txHash, attempts: attempt });
+          }
+        }
+      } catch (err) {
+        console.warn(`[wait-for-night-tx] poll attempt ${attempt} failed: ${err.message}`);
+      }
+      await new Promise(r => setTimeout(r, 5_000));
+    }
+    throw new HttpError(408, `NIGHT payment not observed in ${Math.round(maxWaitMs/1000)}s. The mint will not proceed.`);
+  } catch (err) { sendError(res, err); }
+});
+
+// 4) Reveal metadata — called only after a successful submit.
 app.post('/api/reveal-metadata', async (req, res) => {
   try {
     const { id } = req.body ?? {};

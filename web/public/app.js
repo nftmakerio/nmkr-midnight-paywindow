@@ -11,6 +11,9 @@
 const NETWORK = 'preview';
 const API = '/api';
 
+// Native NIGHT token type — 32 zero bytes (hex)
+const NIGHT_TOKEN = '0000000000000000000000000000000000000000000000000000000000000000';
+
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const PAYWINDOW_ID = params.get('id');
@@ -34,11 +37,38 @@ function formatNight(raw) {
   return `${whole}.${fracStr} NIGHT`;
 }
 
-let connectedApi = null;
-let shieldedAddr = null;
-let paywindowOk  = false;
-let walletOk     = false;
-let backendOk    = false;
+let connectedApi    = null;
+let shieldedAddr    = null;
+let unshieldedAddr  = null;
+let paywindowOk     = false;
+let walletOk        = false;
+let backendOk       = false;
+let paywindowInfo   = null;   // pre-flight response with recipients + totals
+
+// ------------------------------------------------------------
+// Timeline state machine: pending → active → done | failed.
+// Each step also gets an optional sub-text line.
+// ------------------------------------------------------------
+function showTimeline(visible) {
+  const el = $('timeline');
+  el.classList.toggle('show', visible);
+  el.setAttribute('aria-hidden', visible ? 'false' : 'true');
+}
+function setStep(step, state, subText) {
+  const el = document.querySelector(`.timeline-step[data-step="${step}"]`);
+  if (!el) return;
+  el.classList.remove('active', 'done', 'failed', 'skipped');
+  if (state) el.classList.add(state);
+  if (typeof subText === 'string') {
+    el.querySelector('[data-sub]').textContent = subText;
+  }
+}
+function failStep(step, subText) { setStep(step, 'failed', subText); }
+function resetTimeline() {
+  for (const step of ['start', 'night', 'confirm', 'mint', 'done']) {
+    setStep(step, null, '');
+  }
+}
 
 // ------------------------------------------------------------
 // Robust JSON fetch: if the response is HTML (typical for misrouted
@@ -161,6 +191,7 @@ async function validatePaywindow() {
   try {
     const info = await fetchJson(`${API}/paywindow/${encodeURIComponent(PAYWINDOW_ID)}`);
     paywindowOk = info.ok === true;
+    paywindowInfo = info;
     $('price').textContent = formatNight(info.totalNightRaw);
     refreshButton();
   } catch (err) {
@@ -187,6 +218,14 @@ async function connectWallet() {
     connectedApi = await pick.api.connect(NETWORK);
     const s = await connectedApi.getShieldedAddresses();
     shieldedAddr = s.shieldedAddress;
+    // Unshielded address is needed for /api/wait-for-night-tx so the
+    // bridge can scan the buyer's tx history for the NIGHT payment.
+    try {
+      const u = await connectedApi.getUnshieldedAddress();
+      unshieldedAddr = u?.unshieldedAddress ?? u?.address ?? null;
+    } catch (err) {
+      console.warn('[paywindow] could not read unshielded address:', err);
+    }
 
     // Verify the wallet is actually on the expected network — if the user
     // has 1AM set to e.g. preprod while the paywindow targets preview,
@@ -215,39 +254,116 @@ async function connectWallet() {
 }
 
 // ------------------------------------------------------------
-// Mint flow.
+// Mint flow — two-tx pattern with timeline:
+//   1. Start mint                            ← user clicks
+//   2. Send NIGHT (1AM makeTransfer)         ← parallel: mint build on server
+//   3. Confirm NIGHT on-chain                ← server polls address history
+//   4. Build & submit mint                   ← balance + submit
+//   5. Finished                              ← reveal NFT
+// Step 2+3 are skipped for free-mints (no recipients).
 // ------------------------------------------------------------
 async function mint() {
   $('mintBtn').disabled = true;
-  setStatus('Building mint transaction…');
+  $('mintBtn').style.display = 'none';
+  $('status').textContent = '';
+  showTimeline(true);
+  resetTimeline();
+
+  const hasPayment = Boolean(paywindowInfo?.hasPayment);
+  const recipients = paywindowInfo?.recipients || [];
+  if (!hasPayment) {
+    setStep('night',   'skipped', 'no payment configured');
+    setStep('confirm', 'skipped', '');
+  }
+
   try {
-    const built = await fetchJson(`${API}/build-mint`, {
+    // Step 1: Start
+    setStep('start', 'active', 'preparing …');
+
+    // Kick off the mint build on the server now — it can run in parallel
+    // to the wallet's NIGHT-tx approval, so we don't waste minutes after
+    // the user has signed.
+    const mintBuildPromise = fetchJson(`${API}/build-mint`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: PAYWINDOW_ID, buyerShieldedAddress: shieldedAddr }),
     });
 
-    setStatus('Confirm in your wallet — balancing transaction…');
+    setStep('start', 'done', '');
+
+    // Step 2: NIGHT transfer
+    if (hasPayment) {
+      setStep('night', 'active', 'waiting for wallet approval …');
+      const transferSpecs = recipients.map(r => ({
+        kind: 'unshielded',
+        type: NIGHT_TOKEN,
+        value: BigInt(r.amountRaw),
+        recipient: r.address,
+      }));
+      const transferResult = await connectedApi.makeTransfer(transferSpecs);
+      const dappTxId = transferResult?.tx_id ?? transferResult?.txHash ?? null;
+      if (transferResult?.tx || transferResult?.transaction) {
+        // Wallet didn't auto-submit (rare) — submit ourselves
+        await connectedApi.submitTransaction(transferResult.tx ?? transferResult.transaction);
+      }
+      setStep('night', 'done',
+        dappTxId ? `1AM record ${dappTxId.slice(0, 12)}… (the real Sent tx will appear in the explorer)` : 'submitted');
+
+      // Step 3: Confirm on-chain via server polling
+      setStep('confirm', 'active', 'scanning chain (up to 2 min)…');
+      if (!unshieldedAddr) {
+        // Best effort: try to fetch it now if connectWallet didn't get it
+        try {
+          const u = await connectedApi.getUnshieldedAddress();
+          unshieldedAddr = u?.unshieldedAddress ?? u?.address ?? null;
+        } catch {}
+      }
+      if (!unshieldedAddr) throw new Error('Cannot confirm NIGHT tx: wallet did not expose its unshielded address');
+
+      const confirmation = await fetchJson(`${API}/wait-for-night-tx`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: PAYWINDOW_ID,
+          buyerUnshieldedAddress: unshieldedAddr,
+          maxWaitMs: 120_000,
+        }),
+      });
+      const realTxHash = confirmation?.txHash ?? null;
+      setStep('confirm', 'done',
+        realTxHash ? `on-chain: ${realTxHash.slice(0, 16)}…` : 'confirmed');
+    }
+
+    // Step 4: Build & submit mint
+    setStep('mint', 'active', 'waiting for server build …');
+    const built = await mintBuildPromise;
+    setStep('mint', 'active', `tx ready (${built.bytes} bytes) — waiting for wallet…`);
     const balanced = await connectedApi.balanceUnsealedTransaction(built.unsealedTxHex);
     const txHex = balanced?.tx ?? balanced?.transaction;
     if (!txHex) throw new Error('Wallet did not return a balanced transaction.');
-
-    setStatus('Confirm in your wallet — submitting transaction…');
+    setStep('mint', 'active', 'submitting …');
     await connectedApi.submitTransaction(txHex);
+    setStep('mint', 'done', `submitted, future tokenId=${built.tokenId}`);
 
-    setStatus('Mint successful — decrypting NFT…');
+    // Step 5: Done
+    setStep('done', 'active', 'decrypting NFT …');
     await revealNft(built);
+    setStep('done', 'done', '');
   } catch (err) {
-    // Print everything we know about the failure to the console so the
-    // user can copy/paste the full chain — message + status + details.
     console.error('[paywindow] mint failed', err, {
       message: err?.message,
       status: err?.status,
       details: err?.details,
       shieldedAddress: shieldedAddr,
+      unshieldedAddress: unshieldedAddr,
       walletAddressNetwork: addressNetwork(shieldedAddr),
       targetNetwork: NETWORK,
     });
+    // Mark whichever step is currently active as failed.
+    const activeStep = document.querySelector('.timeline-step.active');
+    if (activeStep) {
+      failStep(activeStep.dataset.step, err.message?.slice(0, 80) || 'failed');
+    }
     let msg = `Error: ${err.message ?? err}`;
     if (err?.details) {
       const det = Array.isArray(err.details) ? err.details.join('\n') : String(err.details);
@@ -255,6 +371,7 @@ async function mint() {
     }
     setStatus(msg, true);
     $('mintBtn').disabled = false;
+    $('mintBtn').style.display = '';
   }
 }
 
