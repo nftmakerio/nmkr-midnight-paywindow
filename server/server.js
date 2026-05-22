@@ -163,11 +163,39 @@ async function fetchPaywindow(id) {
 
 // Send an HttpError (or unknown Error) as a JSON response with the
 // right status code. Never lets HTML leak to the client.
+// Pick a property by trying several spellings. NMKR Studio's
+// JSON shape isn't fully documented and may serialise in camelCase,
+// PascalCase or with legacy field names like "toAddress" or "amount".
+// Return the first defined match.
+function pickField(obj, ...keys) {
+  if (!obj) return undefined;
+  for (const k of keys) {
+    if (obj[k] !== undefined && obj[k] !== null) return obj[k];
+  }
+  return undefined;
+}
+
+// Normalise the recipient list returned by Studio into a uniform
+// { address, amountRaw } shape regardless of which spellings Studio
+// uses. Also dig into pw.payment.recipients if the recipients list
+// happens to live one level deeper.
+function normalizeRecipients(pw) {
+  const raw =
+    pw?.recipients ??
+    pw?.Recipients ??
+    pw?.payment?.recipients ??
+    pw?.Payment?.Recipients ??
+    [];
+  return raw.map((r) => ({
+    address:   pickField(r, 'address',   'Address',   'toAddress', 'ToAddress', 'recipient', 'Recipient'),
+    amountRaw: Number(pickField(r, 'amountRaw', 'AmountRaw', 'amount',    'Amount',     'value',     'Value') ?? 0),
+  })).filter(r => r.address && r.amountRaw > 0);
+}
+
 // Sum the recipient amounts. Returned in atomic units; the browser
 // divides by 1_000_000 for display.
 function totalNightRaw(pw) {
-  const recipients = pw?.recipients || [];
-  return recipients.reduce((s, r) => s + Number(r.amountRaw), 0);
+  return normalizeRecipients(pw).reduce((s, r) => s + r.amountRaw, 0);
 }
 
 function sendError(res, err) {
@@ -331,18 +359,17 @@ app.get('/api/reservation-from-project/:projectuid', async (req, res) => {
 app.get('/api/paywindow/:id', async (req, res) => {
   try {
     const pw = await fetchPaywindow(req.params.id);
-    // Recipients are public bech32m addresses + amounts — fine to expose
-    // to the browser so the wallet can build the NIGHT transfer locally.
-    // The owner seed and contract metadata stay server-side.
+    const recipients = normalizeRecipients(pw);
+    if (recipients.length === 0) {
+      // No (or unparseable) payment configured: free mint.
+      console.log(`[/api/paywindow/${req.params.id}] no recipients parsed from Studio response. Raw shape: ${JSON.stringify(Object.keys(pw || {}))}`);
+    }
     res.json({
       ok: true,
       id: pw.id,
-      hasPayment: Boolean(pw.recipients?.length),
-      totalNightRaw: totalNightRaw(pw),
-      recipients: (pw.recipients || []).map(r => ({
-        address: r.address,
-        amountRaw: Number(r.amountRaw),
-      })),
+      hasPayment: recipients.length > 0,
+      totalNightRaw: recipients.reduce((s, r) => s + r.amountRaw, 0),
+      recipients,
     });
   } catch (err) { sendError(res, err); }
 });
