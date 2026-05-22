@@ -304,19 +304,32 @@ async function mint() {
     // Step 2: NIGHT transfer
     if (hasPayment) {
       setStep('night', 'active', 'waiting for wallet approval …');
-      // Same call shape as the working dapp-demo Button 6 — bare array
-      // of { kind, type, value, recipient } specs. 1AM auto-balances,
-      // auto-signs and auto-submits; we get back { tx_id } pointing to
-      // a 1AM DApp record (the real Sent UNSHIELDED tx has a different
-      // hash and only shows up in the address history a few seconds
-      // later, which is what the next step waits for).
+      // Same call shape as the working dapp-demo Button 6.
       const transferSpecs = recipients.map(r => ({
         kind: 'unshielded',
         type: NIGHT_TOKEN,
         value: BigInt(r.amountRaw),
         recipient: r.address,
       }));
-      const transferResult = await connectedApi.makeTransfer(transferSpecs);
+      // Dump exactly what we'll pass to the wallet — so when 1AM throws
+      // an unhelpful error we can see whether it's our payload or theirs.
+      console.log('[paywindow] makeTransfer specs:',
+        transferSpecs.map(s => ({ ...s, value: s.value?.toString?.() })));
+      console.log('[paywindow] paywindowInfo.recipients:', paywindowInfo?.recipients);
+      if (transferSpecs.length === 0) {
+        throw new Error(
+          `No NIGHT recipients to send to — paywindowInfo.recipients is ${JSON.stringify(paywindowInfo?.recipients)}. ` +
+          `The bridge's /api/paywindow/:id response is missing the recipients field. ` +
+          `Check that NMKR Studio's GetMidnightPaywindowDetails response includes 'recipients'.`,
+        );
+      }
+      let transferResult;
+      try {
+        transferResult = await connectedApi.makeTransfer(transferSpecs);
+      } catch (err) {
+        console.error('[paywindow] makeTransfer failed', err, { transferSpecs });
+        throw err;
+      }
       const dappTxId = transferResult?.tx_id ?? transferResult?.txHash ?? null;
       if (transferResult?.tx || transferResult?.transaction) {
         // Wallet didn't auto-submit (rare) — submit ourselves
