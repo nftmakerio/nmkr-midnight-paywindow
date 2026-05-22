@@ -304,23 +304,41 @@ async function mint() {
     // Step 2: NIGHT transfer
     if (hasPayment) {
       setStep('night', 'active', 'waiting for wallet approval …');
-      const desiredOutputs = recipients.map(r => ({
+      const outputs = recipients.map(r => ({
         kind: 'unshielded',
         type: NIGHT_TOKEN,
         value: BigInt(r.amountRaw),
         recipient: r.address,
       }));
-      // 1AM expects { desiredOutputs: [...] }. Older builds also accepted
-      // the bare array — try the new shape first, fall back to the array
-      // form so this works against both extension versions.
-      let transferResult;
-      try {
-        transferResult = await connectedApi.makeTransfer({ desiredOutputs });
-      } catch (err) {
-        const msg = String(err?.message ?? err);
-        if (!/desiredOutputs|payload/i.test(msg)) throw err;
-        console.warn('[paywindow] makeTransfer({desiredOutputs}) failed, retrying with bare array:', msg);
-        transferResult = await connectedApi.makeTransfer(desiredOutputs);
+      // 1AM's makeTransfer signature differs between extension versions and
+      // is poorly documented. Try the known shapes one after the other; if
+      // all fail, dump the method source so we can see the real expected
+      // shape from the error message above the developer console.
+      const candidates = [
+        { label: '{desiredOutputs}', arg: { desiredOutputs: outputs } },
+        { label: 'bare array',       arg: outputs },
+        { label: '{outputs}',        arg: { outputs } },
+        { label: '{transfers}',      arg: { transfers: outputs } },
+      ];
+      let transferResult, lastErr;
+      for (const c of candidates) {
+        try {
+          console.log(`[paywindow] makeTransfer trying shape: ${c.label}`);
+          transferResult = await connectedApi.makeTransfer(c.arg);
+          console.log(`[paywindow] makeTransfer accepted shape: ${c.label}`);
+          break;
+        } catch (err) {
+          lastErr = err;
+          console.warn(`[paywindow] makeTransfer ${c.label} rejected:`, err?.message ?? err);
+        }
+      }
+      if (!transferResult) {
+        try {
+          console.error('[paywindow] makeTransfer source for diagnosis:',
+            connectedApi.makeTransfer?.toString?.()?.slice(0, 2000));
+          console.error('[paywindow] connectedApi keys:', Object.keys(connectedApi));
+        } catch {}
+        throw new Error(`1AM rejected every makeTransfer payload shape. Last error: ${lastErr?.message ?? lastErr}`);
       }
       const dappTxId = transferResult?.tx_id ?? transferResult?.txHash ?? null;
       if (transferResult?.tx || transferResult?.transaction) {
