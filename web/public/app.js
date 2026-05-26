@@ -50,7 +50,67 @@ let shieldedAddr    = null;
 let unshieldedAddr  = null;
 let paywindowOk     = false;
 let walletOk        = false;
-let paywindowInfo   = null;   // pre-flight response with recipients + totals
+let paywindowInfo   = null;   // pre-flight response with recipients + totals + expires
+let expiresAt       = null;   // Date object or null
+let mintStarted     = false;  // true once user clicked Mint — cancels not sent after this
+let mintFinished    = false;  // true once we've notified Studio of an outcome
+
+// ------------------------------------------------------------
+// Log buffer — everything that logs() in the page also accumulates here
+// so we can ship it to Studio as the "log" field on update.
+// ------------------------------------------------------------
+const mintLog = [];
+function trace(msg) {
+  const ts = new Date().toISOString();
+  mintLog.push(`[${ts}] ${msg}`);
+  if (mintLog.length > 500) mintLog.splice(0, mintLog.length - 500);
+  console.log(`[paywindow] ${msg}`);
+}
+function getLog() { return mintLog.join('\n'); }
+
+// ------------------------------------------------------------
+// Notify NMKR Studio about the outcome of this paywindow attempt.
+// updateType ∈ TransactionSuccessfully | TransactionFailed |
+//              PartialError | CancelTransaction | TimeoutTransaction
+// ------------------------------------------------------------
+async function notifyStudio(updateType, extras = {}) {
+  if (mintFinished) return;
+  if (!RESERVATION_ID) return;
+  mintFinished = true;
+  const body = {
+    updateType,
+    receiverAddress: shieldedAddr ?? '',
+    log: getLog(),
+    ...extras,
+  };
+  trace(`notify studio: ${updateType}`);
+  try {
+    await fetch(`${API}/paywindow/${encodeURIComponent(RESERVATION_ID)}/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      keepalive: true,   // survives page unload
+    });
+  } catch (err) {
+    console.warn('[paywindow] notifyStudio failed:', err);
+  }
+}
+
+// Best-effort send on browser close — sendBeacon survives unload.
+function sendBeaconUpdate(updateType, extras = {}) {
+  if (mintFinished || !RESERVATION_ID) return;
+  mintFinished = true;
+  const body = JSON.stringify({
+    updateType,
+    receiverAddress: shieldedAddr ?? '',
+    log: getLog(),
+    ...extras,
+  });
+  const url = `${API}/paywindow/${encodeURIComponent(RESERVATION_ID)}/update`;
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
+  }
+}
 
 // ------------------------------------------------------------
 // Timeline state machine: pending → active → done | failed.
@@ -137,12 +197,52 @@ function findProviders() {
 }
 
 function refreshButton() {
-  // Mint button only needs the paywindow data and a connected wallet.
-  // The health check is advisory — pre-flight success already proves the
-  // bridge can talk to Studio. nmkr-midnight-api reachability surfaces at
-  // mint time anyway with a meaningful error in the timeline.
-  $('mintBtn').disabled = !(paywindowOk && walletOk);
-  if (paywindowOk && walletOk) setStatus('Ready to mint.');
+  const expired = isExpired();
+  // Mint button only needs the paywindow data and a connected wallet
+  // — plus the reservation must not be expired.
+  $('mintBtn').disabled = !(paywindowOk && walletOk && !expired);
+  if (expired) {
+    setStatus('Reservation expired — cannot mint anymore.', true);
+  } else if (paywindowOk && walletOk) {
+    setStatus('Ready to mint.');
+  }
+}
+
+function isExpired() {
+  return Boolean(expiresAt && expiresAt.getTime() <= Date.now());
+}
+
+// Render a live countdown to expires. Switches the line to warning
+// color in the last minute and to expired/red when the deadline is hit.
+let expiresTimer = null;
+function startExpiresTimer() {
+  if (expiresTimer) clearInterval(expiresTimer);
+  const el = $('expires');
+  const tick = () => {
+    if (!expiresAt) { el.textContent = ''; return; }
+    const ms = expiresAt.getTime() - Date.now();
+    if (ms <= 0) {
+      el.textContent = `Expired at ${expiresAt.toLocaleTimeString()}`;
+      el.className = 'expires expired';
+      clearInterval(expiresTimer);
+      expiresTimer = null;
+      // If the user is mid-mint we can't undo, but block any further
+      // attempts and tell Studio.
+      if (!mintStarted) {
+        refreshButton();
+      } else if (!mintFinished) {
+        notifyStudio('TimeoutTransaction', { log: getLog() });
+      }
+      return;
+    }
+    const totalSec = Math.floor(ms / 1000);
+    const mm = Math.floor(totalSec / 60);
+    const ss = totalSec % 60;
+    el.textContent = `Reservation expires in ${mm}:${String(ss).padStart(2, '0')}`;
+    el.className = ms < 60_000 ? 'expires warning' : 'expires';
+  };
+  tick();
+  expiresTimer = setInterval(tick, 1000);
 }
 
 // ------------------------------------------------------------
@@ -202,6 +302,14 @@ async function validatePaywindow() {
     paywindowOk = info.ok === true;
     paywindowInfo = info;
     $('price').textContent = formatNight(info.totalNightRaw);
+    if (info.expires) {
+      const parsed = new Date(info.expires);
+      if (!isNaN(parsed.getTime())) {
+        expiresAt = parsed;
+        trace(`reservation expires at ${expiresAt.toISOString()}`);
+        startExpiresTimer();
+      }
+    }
     refreshButton();
   } catch (err) {
     setTitle('Cannot load paywindow');
@@ -273,6 +381,14 @@ async function connectWallet() {
 // Step 2+3 are skipped for free-mints (no recipients).
 // ------------------------------------------------------------
 async function mint() {
+  // Refuse if the reservation has already expired.
+  if (isExpired()) {
+    setStatus('Reservation expired — cannot mint anymore.', true);
+    notifyStudio('TimeoutTransaction', { log: getLog() });
+    return;
+  }
+
+  mintStarted = true;
   $('mintBtn').disabled = true;
   $('mintBtn').style.display = 'none';
   $('status').textContent = '';
@@ -285,6 +401,12 @@ async function mint() {
     setStep('night',   'skipped', 'no payment configured');
     setStep('confirm', 'skipped', '');
   }
+
+  // Track what's already on-chain so we can pick the right update type
+  // when something later fails.
+  let nightOnChainTxHash = null;
+  let mintedTokenId      = null;
+  trace(`mint started: paywindow=${RESERVATION_ID} buyer=${shieldedAddr.slice(0, 35)}… hasPayment=${hasPayment}`);
 
   try {
     // Step 1: Start
@@ -358,9 +480,10 @@ async function mint() {
           maxWaitMs: 120_000,
         }),
       });
-      const realTxHash = confirmation?.txHash ?? null;
+      nightOnChainTxHash = confirmation?.txHash ?? null;
       setStep('confirm', 'done',
-        realTxHash ? `on-chain: ${realTxHash.slice(0, 16)}…` : 'confirmed');
+        nightOnChainTxHash ? `on-chain: ${nightOnChainTxHash.slice(0, 16)}…` : 'confirmed');
+      trace(`NIGHT confirmed on-chain: ${nightOnChainTxHash}`);
     }
 
     // Step 4: Build & submit mint
@@ -372,10 +495,17 @@ async function mint() {
     if (!txHex) throw new Error('Wallet did not return a balanced transaction.');
     setStep('mint', 'active', 'submitting …');
     await connectedApi.submitTransaction(txHex);
-    setStep('mint', 'done', `submitted, future tokenId=${built.tokenId}`);
+    mintedTokenId = built.tokenId ?? null;
+    setStep('mint', 'done', `submitted, future tokenId=${mintedTokenId}`);
+    trace(`mint submitted: tokenId=${mintedTokenId}`);
 
-    // Step 5: Done
+    // Step 5: Done — notify Studio of success then reveal.
     setStep('done', 'active', 'decrypting NFT …');
+    await notifyStudio('TransactionSuccessfully', {
+      mintToken: String(mintedTokenId ?? ''),
+      nightTransactionId: nightOnChainTxHash ?? '',
+      receiverAddress: shieldedAddr,
+    });
     await revealNft(built);
     setStep('done', 'done', '');
   } catch (err) {
@@ -393,14 +523,31 @@ async function mint() {
     if (activeStep) {
       failStep(activeStep.dataset.step, err.message?.slice(0, 80) || 'failed');
     }
+    trace(`mint failed: ${err?.message ?? err}`);
+
+    // Decide which update type fits the failure point:
+    //  - NIGHT already on-chain + mint failed → PartialError (user paid, no NFT)
+    //  - NIGHT didn't go through                 → TransactionFailed
+    const updateType = nightOnChainTxHash ? 'PartialError' : 'TransactionFailed';
+    notifyStudio(updateType, {
+      mintToken: String(mintedTokenId ?? ''),
+      nightTransactionId: nightOnChainTxHash ?? '',
+      receiverAddress: shieldedAddr,
+    }).catch(() => {});
+
     let msg = `Error: ${err.message ?? err}`;
     if (err?.details) {
       const det = Array.isArray(err.details) ? err.details.join('\n') : String(err.details);
       msg += `\n\n${det}`;
     }
     setStatus(msg, true);
-    $('mintBtn').disabled = false;
-    $('mintBtn').style.display = '';
+    // For PartialError the wallet already paid — re-enable mint would
+    // let the user pay again, which is wrong. So we only re-enable on
+    // a clean TransactionFailed (NIGHT did not go through).
+    if (updateType === 'TransactionFailed') {
+      $('mintBtn').disabled = false;
+      $('mintBtn').style.display = '';
+    }
   }
 }
 
@@ -438,4 +585,18 @@ window.addEventListener('DOMContentLoaded', () => {
   checkBackends();
   validatePaywindow();
   connectWallet();
+});
+
+// If the user closes the tab/window without clicking Mint, release the
+// reservation so the NFT goes back to the drop pool. sendBeacon survives
+// the unload event. We don't send this once mint has been kicked off —
+// any subsequent failure will be reported as TransactionFailed/PartialError
+// from the mint flow itself.
+window.addEventListener('pagehide', (e) => {
+  if (mintStarted || mintFinished) return;
+  sendBeaconUpdate('CancelTransaction', { log: getLog() });
+});
+window.addEventListener('beforeunload', (e) => {
+  if (mintStarted || mintFinished) return;
+  sendBeaconUpdate('CancelTransaction', { log: getLog() });
 });

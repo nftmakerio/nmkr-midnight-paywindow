@@ -364,12 +364,16 @@ app.get('/api/paywindow/:id', async (req, res) => {
       // No (or unparseable) payment configured: free mint.
       console.log(`[/api/paywindow/${req.params.id}] no recipients parsed from Studio response. Raw shape: ${JSON.stringify(Object.keys(pw || {}))}`);
     }
+    // Pass through the expires timestamp if Studio includes one — the
+    // browser uses it to show a countdown and refuse mint after expiry.
+    const expires = pw?.expires ?? pw?.Expires ?? pw?.expiresAt ?? null;
     res.json({
       ok: true,
       id: pw.id,
       hasPayment: recipients.length > 0,
       totalNightRaw: recipients.reduce((s, r) => s + r.amountRaw, 0),
       recipients,
+      expires,
     });
   } catch (err) { sendError(res, err); }
 });
@@ -513,6 +517,103 @@ app.post('/api/reveal-metadata', async (req, res) => {
       mediaType: pw.nft.mediaType,
       description: pw.nft.description,
     });
+  } catch (err) { sendError(res, err); }
+});
+
+// 5) Notify NMKR Studio about the outcome of a paywindow attempt.
+// The browser calls this after the mint succeeds or fails, and also
+// via navigator.sendBeacon on window close (CancelTransaction). The
+// bridge forwards to Studio's UpdateMidnightPaywindowDetails — Studio
+// can then release the reservation, log the result, etc.
+const VALID_UPDATE_TYPES = new Set([
+  'TransactionSuccessfully',
+  'TransactionFailed',
+  'PartialError',
+  'CancelTransaction',
+  'TimeoutTransaction',
+]);
+
+app.post('/api/paywindow/:id/update', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      updateType,
+      mintToken          = '',
+      nightTransactionId = '',
+      feesInDust         = 0,
+      receiverAddress    = '',
+      log                = '',
+    } = req.body ?? {};
+
+    if (!VALID_UPDATE_TYPES.has(updateType)) {
+      throw new HttpError(400, `updateType must be one of: ${[...VALID_UPDATE_TYPES].join(', ')}`);
+    }
+
+    // Truncate the log so we don't ship megabytes — Studio likely has
+    // a column size limit. Keep tail because the latest lines are most
+    // diagnostic.
+    const trimmedLog = String(log).slice(-8000);
+
+    const body = {
+      updateType,
+      mintToken: String(mintToken ?? ''),
+      nightTransactionId: String(nightTransactionId ?? ''),
+      feesInDust: Number(feesInDust ?? 0) || 0,
+      receiverAddress: String(receiverAddress ?? ''),
+      log: trimmedLog,
+    };
+
+    console.log(`[/api/paywindow/${id}/update] -> ${updateType}`, {
+      mintToken: body.mintToken,
+      nightTxId: body.nightTransactionId,
+      receiver: body.receiverAddress.slice(0, 35) + '…',
+      feesInDust: body.feesInDust,
+      logLen: trimmedLog.length,
+    });
+
+    if (PAYWINDOW_MOCK) {
+      return res.json({ ok: true, mock: true, body });
+    }
+
+    const headers = {
+      accept: 'text/plain',
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${NMKR_STUDIO_KEY}`,
+    };
+    const url = `${NMKR_STUDIO_URL}/UpdateMidnightPaywindowDetails`;
+
+    // Studio specifies GET with a JSON body (unusual but it's what their
+    // curl example uses). Node's fetch requires duplex:'half' to send a
+    // body on a non-POST method. If Studio also accepts POST we'd prefer
+    // that for cleanliness; for now we mirror the documented call.
+    let r;
+    try {
+      r = await fetch(url, {
+        method: 'GET',
+        headers,
+        body: JSON.stringify(body),
+        duplex: 'half',
+      });
+    } catch (err) {
+      // Some Node versions still refuse GET+body even with duplex.
+      // Fall back to POST so we don't drop the update entirely.
+      console.warn(`[/api/paywindow/${id}/update] GET+body rejected, retrying with POST: ${err.message}`);
+      try {
+        r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+      } catch (err2) {
+        throw new HttpError(502, `cannot reach NMKR Studio: ${err2.message}`);
+      }
+    }
+
+    let respBody;
+    try { respBody = await readJsonOrThrow(r, 'NMKR Studio UpdateMidnightPaywindowDetails'); }
+    catch (e) { respBody = { raw: 'non-json response, HTTP ' + r.status }; }
+
+    if (!r.ok) {
+      console.error(`[/api/paywindow/${id}/update] Studio HTTP ${r.status}`, respBody);
+      throw new HttpError(r.status, respBody?.errorMessage ?? respBody?.message ?? `Studio HTTP ${r.status}`, respBody);
+    }
+    res.json({ ok: true, studio: respBody });
   } catch (err) { sendError(res, err); }
 });
 
