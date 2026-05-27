@@ -17,20 +17,23 @@ const NIGHT_TOKEN = '00000000000000000000000000000000000000000000000000000000000
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 // Two ways to open the paywindow:
-//   ?id=<reservationid>            → direct (skip lookup)
-//   ?projectuid=<uid>              → ask Studio for the next available
-//                                    reservation, use its paymentAddressId
-//                                    as reservationid
-//   &receiver=<mn_shield-addr_…>   → optional, only meaningful with
-//                                    ?projectuid=. Reserves an NFT for
-//                                    a specific shielded address rather
-//                                    than the random pool default.
+//   ?id=<reservationid>     → direct (skip lookup)
+//   ?projectuid=<uid>       → ask Studio for the next available
+//                             reservation; reserved for THIS buyer
+//                             (1AM's shielded address is forwarded
+//                             as optionalreceiveraddress).
 const RAW_ID      = params.get('id');
 const PROJECT_UID = params.get('projectuid');
-const RECEIVER    = params.get('receiver');
 // The id we actually use everywhere — set either from RAW_ID directly
 // or resolved from PROJECT_UID via /api/reservation-from-project.
 let RESERVATION_ID = RAW_ID;
+
+// Resolved once 1AM is connected and we have its shielded address.
+// validatePaywindow awaits this on the ?projectuid= path so the
+// Studio reservation goes to the right buyer.
+let walletReady;
+let resolveWalletReady;
+walletReady = new Promise(r => { resolveWalletReady = r; });
 
 const setStatus = (msg, isError = false) => {
   const el = $('status');
@@ -289,19 +292,25 @@ async function validatePaywindow() {
     return;
   }
   try {
-    // Step 0 (optional): resolve project UID into a fresh reservation id
-    // by asking NMKR Studio for the next available random NFT. If a
-    // ?receiver= is supplied, forward it as optionalreceiveraddress so
-    // Studio reserves the NFT specifically for that shielded address.
+    // Step 0 (only on the ?projectuid= path): wait for the wallet
+    // connection so we have the buyer's shielded address, then ask
+    // NMKR Studio to reserve an NFT specifically for that address.
+    // Without the receiver Studio would return some random pool entry
+    // that doesn't match the actual buyer.
     if (!RESERVATION_ID && PROJECT_UID) {
-      setStatus('Reserving an NFT from the drop …');
-      let resolveUrl = `${API}/reservation-from-project/${encodeURIComponent(PROJECT_UID)}`;
-      if (RECEIVER) resolveUrl += `?receiver=${encodeURIComponent(RECEIVER)}`;
+      setStatus('Waiting for wallet …');
+      await walletReady;
+      if (!shieldedAddr) {
+        throw new Error('Wallet did not provide a shielded address; cannot reserve NFT.');
+      }
+      setStatus('Reserving an NFT for your wallet …');
+      const resolveUrl = `${API}/reservation-from-project/${encodeURIComponent(PROJECT_UID)}` +
+                        `?receiver=${encodeURIComponent(shieldedAddr)}`;
       const r = await fetchJson(resolveUrl);
       RESERVATION_ID = r.reservationid;
       console.log('[paywindow] resolved project UID to reservation', {
         projectUid: PROJECT_UID,
-        receiver: RECEIVER ?? null,
+        receiver: shieldedAddr,
         reservationid: RESERVATION_ID,
         paymentAddress: r.paymentAddress,
         expires: r.expires,
@@ -377,8 +386,12 @@ async function connectWallet() {
     }
     walletOk = true;
     refreshButton();
+    resolveWalletReady();
   } catch (err) {
     setStatus(`Wallet connection failed: ${err.message ?? err}`, true);
+    // Resolve anyway so validatePaywindow can fail with a useful error
+    // instead of hanging forever waiting for a wallet that never came.
+    resolveWalletReady();
   }
 }
 
