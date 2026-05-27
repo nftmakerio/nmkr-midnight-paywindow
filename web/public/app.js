@@ -35,6 +35,52 @@ let walletReady;
 let resolveWalletReady;
 walletReady = new Promise(r => { resolveWalletReady = r; });
 
+// Remember which window.midnight provider we picked at connect time
+// so we can auto-reconnect if 1AM's session expires later.
+let walletPickedProvider = null;
+
+// Tell whether an error looks like a "session expired" / "please
+// reconnect" message from any of the known wallet providers.
+function isExpiredError(err) {
+  const msg = String(err?.message ?? err ?? '').toLowerCase();
+  return /connection expired|please reconnect|session expired|not connected/i.test(msg);
+}
+
+// Reconnect to the same provider we used at boot. Refreshes
+// connectedApi and the cached addresses.
+async function reconnectWallet() {
+  if (!walletPickedProvider) {
+    const providers = findProviders();
+    walletPickedProvider = providers.find(p => /1am|midnight/i.test(p.name + p.rdns)) ?? providers[0];
+  }
+  if (!walletPickedProvider) throw new Error('No Midnight wallet detected — cannot reconnect');
+  trace(`reconnecting to wallet (${walletPickedProvider.name}) …`);
+  connectedApi = await walletPickedProvider.api.connect(NETWORK);
+  const s = await connectedApi.getShieldedAddresses();
+  shieldedAddr = s.shieldedAddress;
+  try {
+    const u = await connectedApi.getUnshieldedAddress();
+    unshieldedAddr = u?.unshieldedAddress ?? u?.address ?? null;
+  } catch {}
+  trace('wallet reconnected');
+  return connectedApi;
+}
+
+// Run a wallet-API call; if 1AM says the session is expired, reconnect
+// transparently and retry once. Used for makeTransfer, balanceUnsealed-
+// Transaction, submitTransaction etc.
+async function withWallet(fn) {
+  try {
+    return await fn(connectedApi);
+  } catch (err) {
+    if (!isExpiredError(err)) throw err;
+    setStatus('Wallet session expired — reconnecting …');
+    await reconnectWallet();
+    setStatus('');
+    return await fn(connectedApi);
+  }
+}
+
 const setStatus = (msg, isError = false) => {
   const el = $('status');
   el.textContent = msg;
@@ -352,6 +398,7 @@ async function connectWallet() {
     return;
   }
   const pick = providers.find(p => /1am|midnight/i.test(p.name + p.rdns)) ?? providers[0];
+  walletPickedProvider = pick;
   try {
     connectedApi = await pick.api.connect(NETWORK);
     const s = await connectedApi.getShieldedAddresses();
@@ -471,7 +518,7 @@ async function mint() {
       }
       let transferResult;
       try {
-        transferResult = await connectedApi.makeTransfer(transferSpecs);
+        transferResult = await withWallet(api => api.makeTransfer(transferSpecs));
       } catch (err) {
         console.error('[paywindow] makeTransfer failed', err, { transferSpecs });
         throw err;
@@ -479,7 +526,7 @@ async function mint() {
       const dappTxId = transferResult?.tx_id ?? transferResult?.txHash ?? null;
       if (transferResult?.tx || transferResult?.transaction) {
         // Wallet didn't auto-submit (rare) — submit ourselves
-        await connectedApi.submitTransaction(transferResult.tx ?? transferResult.transaction);
+        await withWallet(api => api.submitTransaction(transferResult.tx ?? transferResult.transaction));
       }
       setStep('night', 'done',
         dappTxId ? `1AM record ${dappTxId.slice(0, 12)}… (the real Sent tx will appear in the explorer)` : 'submitted');
@@ -489,7 +536,7 @@ async function mint() {
       if (!unshieldedAddr) {
         // Best effort: try to fetch it now if connectWallet didn't get it
         try {
-          const u = await connectedApi.getUnshieldedAddress();
+          const u = await withWallet(api => api.getUnshieldedAddress());
           unshieldedAddr = u?.unshieldedAddress ?? u?.address ?? null;
         } catch {}
       }
@@ -514,11 +561,11 @@ async function mint() {
     setStep('mint', 'active', 'waiting for server build …');
     const built = await mintBuildPromise;
     setStep('mint', 'active', `tx ready (${built.bytes} bytes) — waiting for wallet…`);
-    const balanced = await connectedApi.balanceUnsealedTransaction(built.unsealedTxHex);
+    const balanced = await withWallet(api => api.balanceUnsealedTransaction(built.unsealedTxHex));
     const txHex = balanced?.tx ?? balanced?.transaction;
     if (!txHex) throw new Error('Wallet did not return a balanced transaction.');
     setStep('mint', 'active', 'submitting …');
-    await connectedApi.submitTransaction(txHex);
+    await withWallet(api => api.submitTransaction(txHex));
     mintedTokenId = built.tokenId ?? null;
     setStep('mint', 'done', `submitted, future tokenId=${mintedTokenId}`);
     trace(`mint submitted: tokenId=${mintedTokenId}`);
