@@ -17,11 +17,17 @@ const NIGHT_TOKEN = '00000000000000000000000000000000000000000000000000000000000
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 // Two ways to open the paywindow:
-//   ?id=<reservationid>     → direct (skip lookup)
-//   ?projectuid=<uid>       → ask Studio for the next available reservation,
-//                             use its paymentAddressId as reservationid
+//   ?id=<reservationid>            → direct (skip lookup)
+//   ?projectuid=<uid>              → ask Studio for the next available
+//                                    reservation, use its paymentAddressId
+//                                    as reservationid
+//   &receiver=<mn_shield-addr_…>   → optional, only meaningful with
+//                                    ?projectuid=. Reserves an NFT for
+//                                    a specific shielded address rather
+//                                    than the random pool default.
 const RAW_ID      = params.get('id');
 const PROJECT_UID = params.get('projectuid');
+const RECEIVER    = params.get('receiver');
 // The id we actually use everywhere — set either from RAW_ID directly
 // or resolved from PROJECT_UID via /api/reservation-from-project.
 let RESERVATION_ID = RAW_ID;
@@ -284,13 +290,18 @@ async function validatePaywindow() {
   }
   try {
     // Step 0 (optional): resolve project UID into a fresh reservation id
-    // by asking NMKR Studio for the next available random NFT.
+    // by asking NMKR Studio for the next available random NFT. If a
+    // ?receiver= is supplied, forward it as optionalreceiveraddress so
+    // Studio reserves the NFT specifically for that shielded address.
     if (!RESERVATION_ID && PROJECT_UID) {
       setStatus('Reserving an NFT from the drop …');
-      const r = await fetchJson(`${API}/reservation-from-project/${encodeURIComponent(PROJECT_UID)}`);
+      let resolveUrl = `${API}/reservation-from-project/${encodeURIComponent(PROJECT_UID)}`;
+      if (RECEIVER) resolveUrl += `?receiver=${encodeURIComponent(RECEIVER)}`;
+      const r = await fetchJson(resolveUrl);
       RESERVATION_ID = r.reservationid;
       console.log('[paywindow] resolved project UID to reservation', {
         projectUid: PROJECT_UID,
+        receiver: RECEIVER ?? null,
         reservationid: RESERVATION_ID,
         paymentAddress: r.paymentAddress,
         expires: r.expires,

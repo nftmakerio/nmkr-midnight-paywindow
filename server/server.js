@@ -304,17 +304,26 @@ app.get('/api/reservation-from-project/:projectuid', async (req, res) => {
     const { projectuid } = req.params;
     if (!projectuid) throw new HttpError(400, 'projectuid is required');
 
+    // Optional: shielded receiver address. If supplied, Studio reserves
+    // an NFT specifically for that address; otherwise it returns the
+    // next free reservation from the random pool.
+    const receiver = req.query.receiver ? String(req.query.receiver) : '';
+
     if (PAYWINDOW_MOCK) {
       return res.json({
         ok: true,
         reservationid: `mock-${projectuid}`,
         paymentAddress: '0xmock-address',
         currency: 'NIGHT',
+        receiverUsed: receiver || null,
       });
     }
 
     const headers = { accept: 'text/plain', Authorization: `Bearer ${NMKR_STUDIO_KEY}` };
-    const url = `${NMKR_STUDIO_URL}/GetPaymentAddressForRandomNftSale/${encodeURIComponent(projectuid)}/1?blockchain=Midnight`;
+    let url = `${NMKR_STUDIO_URL}/GetPaymentAddressForRandomNftSale/${encodeURIComponent(projectuid)}/1?blockchain=Midnight`;
+    if (receiver) {
+      url += `&optionalreceiveraddress=${encodeURIComponent(receiver)}`;
+    }
 
     let r;
     try {
