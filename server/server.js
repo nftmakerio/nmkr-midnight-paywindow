@@ -696,7 +696,7 @@ app.post('/api/paywindow/:id/update', async (req, res) => {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${await getStudioAccessToken()}`,
     };
-    const url = `${NMKR_STUDIO_URL}/UpdateMidnightPaywindowDetails`;
+    const url = `${NMKR_STUDIO_URL}/UpdateMidnightPaywindowDetails?reservationid=${encodeURIComponent(id)}`;
 
     // Studio specifies GET with a JSON body (unusual but it's what their
     // curl example uses). Node's fetch requires duplex:'half' to send a
