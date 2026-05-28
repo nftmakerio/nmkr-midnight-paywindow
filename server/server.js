@@ -21,7 +21,16 @@
 //   NMKR_API_URL               default http://localhost:3002 (the local mint signer)
 //   NMKR_STUDIO_URL            explicit override for the Studio base URL.
 //                              normally not needed — set NMKR_NETWORK instead.
-//   NMKR_STUDIO_API_KEY        bearer token for NMKR Studio (required unless PAYWINDOW_MOCK=1)
+//   NMKR_STUDIO_TOTP_SECRET    "API token password" from Studio. Used BOTH as the
+//                              first URL parameter to GetAccessToken AND as the
+//                              TOTP secret (6-digit code derived from current time).
+//                              The bridge fetches a short-lived access token before
+//                              each Studio request and caches it until ~60 s before
+//                              its expiry. THIS IS A SECRET — set it in the per-
+//                              network env-file (e.g. /etc/nmkr-paywindow/preprod.env),
+//                              never in source control.
+//   NMKR_STUDIO_API_KEY        legacy: static bearer token. If set, takes precedence
+//                              over the TOTP flow (handy for local mock/test).
 //   ALLOWED_ORIGIN             optional CORS allow-list (comma-separated).
 //                              omit to allow same-origin only (no Access-Control header).
 //   PAYWINDOW_MOCK=1           dev mode: serve a synthetic paywindow built from
@@ -31,6 +40,7 @@
 import express from 'express';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,6 +48,7 @@ const PORT              = Number(process.env.PORT) || 4100;
 const NMKR_NETWORK      = (process.env.NMKR_NETWORK || 'preprod').toLowerCase();
 const NMKR_API_URL      = process.env.NMKR_API_URL      || 'http://localhost:3002';
 const NMKR_STUDIO_KEY   = process.env.NMKR_STUDIO_API_KEY || '';
+const NMKR_STUDIO_TOTP_SECRET = process.env.NMKR_STUDIO_TOTP_SECRET || '';
 const PAYWINDOW_MOCK    = process.env.PAYWINDOW_MOCK === '1';
 const ALLOWED_ORIGINS   = (process.env.ALLOWED_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
 
@@ -56,8 +67,10 @@ const MOCK_CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS || '';
 const MOCK_RECIPIENTS = [process.env.RECIPIENT_1, process.env.RECIPIENT_2, process.env.RECIPIENT_3].filter(Boolean);
 const MOCK_PRICE_NIGHT = Number(process.env.PRICE_NIGHT) || 2;
 
-if (!PAYWINDOW_MOCK && !NMKR_STUDIO_KEY) {
-  console.error('FATAL: NMKR_STUDIO_API_KEY is required (or set PAYWINDOW_MOCK=1 for dev).');
+if (!PAYWINDOW_MOCK && !NMKR_STUDIO_KEY && !NMKR_STUDIO_TOTP_SECRET) {
+  console.error('FATAL: either NMKR_STUDIO_TOTP_SECRET (recommended, dynamic token) ' +
+    'or NMKR_STUDIO_API_KEY (legacy static bearer) is required. ' +
+    'Set PAYWINDOW_MOCK=1 for dev mode.');
   process.exit(1);
 }
 if (PAYWINDOW_MOCK && (!MOCK_OWNER_SEED || !MOCK_CONTRACT_ADDRESS || MOCK_RECIPIENTS.length === 0)) {
@@ -100,6 +113,100 @@ async function readJsonOrThrow(res, contextLabel) {
 }
 
 // ------------------------------------------------------------
+// NMKR Studio access-token flow (TOTP-protected).
+//
+// Studio gives each customer an "API token password" — a long random
+// string. To call any Studio endpoint, the bridge first asks
+//   GET /GetAccessToken/<password>/<otp>
+// where <otp> is the 6-digit TOTP code derived from the same password.
+// The response is { accessToken, expires }. We cache the token and
+// refresh ~60 s before its expiry.
+//
+// This matches the C# reference:
+//   var pin = new TwoFactorAuthenticator().GetCurrentPIN(password);
+//   await httpClient.GetAsync($"{api}/getaccesstoken/{urlEncode(password)}/{pin}");
+// ------------------------------------------------------------
+function generateTOTP(secret, time = Date.now()) {
+  // RFC 6238 with 30-second step, SHA-1, 6 digits. The secret here is
+  // used as raw UTF-8 bytes (matches Google.Authenticator / TwoFactor-
+  // Authenticator default when the input isn't valid base32).
+  const counter = Math.floor(time / 30_000);
+  const counterBuf = Buffer.alloc(8);
+  counterBuf.writeBigUInt64BE(BigInt(counter));
+  const hmac = crypto.createHmac('sha1', Buffer.from(secret, 'utf8'));
+  hmac.update(counterBuf);
+  const hash = hmac.digest();
+  const offset = hash[hash.length - 1] & 0x0f;
+  const code = ((hash[offset] & 0x7f) << 24)
+             | ((hash[offset + 1] & 0xff) << 16)
+             | ((hash[offset + 2] & 0xff) << 8)
+             | (hash[offset + 3] & 0xff);
+  return String(code % 1_000_000).padStart(6, '0');
+}
+
+// In-memory access-token cache. We deliberately refresh a little before
+// the server-stated expiry so a token never expires mid-flight.
+const TOKEN_REFRESH_SAFETY_MS = 60_000;
+let cachedToken = null;          // { token, expiresAt: Date }
+let pendingTokenFetch = null;    // de-dupe concurrent refreshes
+
+async function fetchFreshAccessToken() {
+  if (!NMKR_STUDIO_TOTP_SECRET) {
+    throw new HttpError(500, 'NMKR_STUDIO_TOTP_SECRET is not configured');
+  }
+  const otp = generateTOTP(NMKR_STUDIO_TOTP_SECRET);
+  // GetAccessToken lives at the ROOT of the Studio host (no /v2 prefix),
+  // unlike the rest of the endpoints we call.
+  const studioHost = NMKR_STUDIO_URL.replace(/\/v\d+\/?$/, '');
+  const url = `${studioHost}/GetAccessToken/${encodeURIComponent(NMKR_STUDIO_TOTP_SECRET)}/${otp}`;
+  let r;
+  try {
+    r = await fetch(url, { headers: { accept: 'text/plain' } });
+  } catch (err) {
+    throw new HttpError(502, `cannot reach NMKR Studio /GetAccessToken: ${err.message}`);
+  }
+  let body;
+  try { body = await readJsonOrThrow(r, 'NMKR Studio /GetAccessToken'); }
+  catch (err) {
+    if (r.status === 401 || r.status === 403) {
+      throw new HttpError(502, `Studio /GetAccessToken rejected (HTTP ${r.status}). Check NMKR_STUDIO_TOTP_SECRET — also that the server clock is in sync (TOTP is time-sensitive).`);
+    }
+    throw err;
+  }
+  if (!r.ok || !body?.accessToken) {
+    throw new HttpError(r.status || 502,
+      `Studio /GetAccessToken failed: ${body?.errorMessage ?? body?.message ?? `HTTP ${r.status}`}`);
+  }
+  const expiresAt = body.expires ? new Date(body.expires) : new Date(Date.now() + 10 * 60_000);
+  console.log(`[Studio token] fetched fresh token, valid until ${expiresAt.toISOString()}`);
+  return { token: body.accessToken, expiresAt };
+}
+
+// Returns a current access token. If a cached one is still valid (with
+// safety margin), returns it; otherwise refreshes. Concurrent callers
+// share the same in-flight refresh.
+async function getStudioAccessToken() {
+  // Legacy/test path: a static bearer in env takes precedence.
+  if (NMKR_STUDIO_KEY) return NMKR_STUDIO_KEY;
+
+  const now = Date.now();
+  if (cachedToken && cachedToken.expiresAt.getTime() - now > TOKEN_REFRESH_SAFETY_MS) {
+    return cachedToken.token;
+  }
+  if (pendingTokenFetch) return (await pendingTokenFetch).token;
+
+  pendingTokenFetch = (async () => {
+    try {
+      cachedToken = await fetchFreshAccessToken();
+      return cachedToken;
+    } finally {
+      pendingTokenFetch = null;
+    }
+  })();
+  return (await pendingTokenFetch).token;
+}
+
+// ------------------------------------------------------------
 // Paywindow lookup: returns the full PaywindowData record for an id.
 // In production this hits NMKR Studio; in mock mode it returns a
 // synthetic record built from env vars.
@@ -132,7 +239,7 @@ async function fetchPaywindow(id) {
   // (preprod or mainnet, depending on NMKR_STUDIO_URL — see env docs above).
   const headers = {
     accept: 'text/plain',
-    Authorization: `Bearer ${NMKR_STUDIO_KEY}`,
+    Authorization: `Bearer ${await getStudioAccessToken()}`,
   };
   const url = `${NMKR_STUDIO_URL}/GetMidnightPaywindowDetails?reservationid=${encodeURIComponent(id)}`;
 
@@ -268,7 +375,7 @@ app.get('/api/health', async (_req, res) => {
       // /GetMidnightPaywindowDetails with a sentinel id and rely on the
       // server returning 401/404 (which proves it's reachable + auth works
       // or the bearer is wrong, depending on the code).
-      const headers = { accept: 'text/plain', Authorization: `Bearer ${NMKR_STUDIO_KEY}` };
+      const headers = { accept: 'text/plain', Authorization: `Bearer ${await getStudioAccessToken()}` };
       const r = await fetch(`${NMKR_STUDIO_URL}/GetMidnightPaywindowDetails?reservationid=healthcheck-probe`,
         { headers, signal: ctl.signal });
       clearTimeout(t);
@@ -319,7 +426,7 @@ app.get('/api/reservation-from-project/:projectuid', async (req, res) => {
       });
     }
 
-    const headers = { accept: 'text/plain', Authorization: `Bearer ${NMKR_STUDIO_KEY}` };
+    const headers = { accept: 'text/plain', Authorization: `Bearer ${await getStudioAccessToken()}` };
     let url = `${NMKR_STUDIO_URL}/GetPaymentAddressForRandomNftSale/${encodeURIComponent(projectuid)}/1?blockchain=Midnight`;
     if (receiver) {
       url += `&optionalreceiveraddress=${encodeURIComponent(receiver)}`;
@@ -587,7 +694,7 @@ app.post('/api/paywindow/:id/update', async (req, res) => {
     const headers = {
       accept: 'text/plain',
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${NMKR_STUDIO_KEY}`,
+      Authorization: `Bearer ${await getStudioAccessToken()}`,
     };
     const url = `${NMKR_STUDIO_URL}/UpdateMidnightPaywindowDetails`;
 
