@@ -161,7 +161,7 @@ async function fetchFreshAccessToken() {
   const url = `${studioHost}/GetAccessToken/${encodeURIComponent(NMKR_STUDIO_TOTP_SECRET)}/${otp}`;
   let r;
   try {
-    r = await fetch(url, { headers: { accept: 'text/plain' } });
+    r = await fetch(url, { headers: { accept: 'application/json' } });
   } catch (err) {
     throw new HttpError(502, `cannot reach NMKR Studio /GetAccessToken: ${err.message}`);
   }
@@ -238,7 +238,7 @@ async function fetchPaywindow(id) {
   // NMKR Studio: GET {base}/GetMidnightPaywindowDetails?reservationid={id}
   // (preprod or mainnet, depending on NMKR_STUDIO_URL — see env docs above).
   const headers = {
-    accept: 'text/plain',
+    accept: 'application/json',
     Authorization: `Bearer ${await getStudioAccessToken()}`,
   };
   const url = `${NMKR_STUDIO_URL}/GetMidnightPaywindowDetails?reservationid=${encodeURIComponent(id)}`;
@@ -375,7 +375,7 @@ app.get('/api/health', async (_req, res) => {
       // /GetMidnightPaywindowDetails with a sentinel id and rely on the
       // server returning 401/404 (which proves it's reachable + auth works
       // or the bearer is wrong, depending on the code).
-      const headers = { accept: 'text/plain', Authorization: `Bearer ${await getStudioAccessToken()}` };
+      const headers = { accept: 'application/json', Authorization: `Bearer ${await getStudioAccessToken()}` };
       const r = await fetch(`${NMKR_STUDIO_URL}/GetMidnightPaywindowDetails?reservationid=healthcheck-probe`,
         { headers, signal: ctl.signal });
       clearTimeout(t);
@@ -426,7 +426,7 @@ app.get('/api/reservation-from-project/:projectuid', async (req, res) => {
       });
     }
 
-    const headers = { accept: 'text/plain', Authorization: `Bearer ${await getStudioAccessToken()}` };
+    const headers = { accept: 'application/json', Authorization: `Bearer ${await getStudioAccessToken()}` };
     let url = `${NMKR_STUDIO_URL}/GetPaymentAddressForRandomNftSale/${encodeURIComponent(projectuid)}/1?blockchain=Midnight`;
     if (receiver) {
       url += `&optionalreceiveraddress=${encodeURIComponent(receiver)}`;
@@ -574,13 +574,20 @@ app.post('/api/build-mint', async (req, res) => {
 // (or self) tx with outputs to every paywindow recipient.
 app.post('/api/wait-for-night-tx', async (req, res) => {
   try {
-    const { id, buyerUnshieldedAddress, sinceMs = 60_000, maxWaitMs = 120_000 } = req.body ?? {};
+    const { id, buyerUnshieldedAddress, recipients, sinceMs = 60_000, maxWaitMs = 120_000 } = req.body ?? {};
     if (!id) throw new HttpError(400, 'id is required');
     if (!buyerUnshieldedAddress?.startsWith?.('mn_addr_')) {
       throw new HttpError(400, 'buyerUnshieldedAddress is required (mn_addr_…)');
     }
-    const pw = await fetchPaywindow(id);
-    const expectedRecipients = (pw.recipients || []).map(r => ({
+    // Prefer recipients passed by the client (we already received them
+    // from Studio when the paywindow was loaded). This avoids a second
+    // /GetMidnightPaywindowDetails call against Studio, which can fail
+    // with HTTP 406 once the reservation transitions out of "Open".
+    // Fall back to a fresh Studio fetch only if the client did not pass them.
+    const rawRecipients = Array.isArray(recipients) && recipients.length > 0
+      ? recipients
+      : (await fetchPaywindow(id)).recipients;
+    const expectedRecipients = (rawRecipients || []).map(r => ({
       address:   r.address,
       amountRaw: BigInt(r.amountRaw),
     }));
@@ -692,7 +699,7 @@ app.post('/api/paywindow/:id/update', async (req, res) => {
     }
 
     const headers = {
-      accept: 'text/plain',
+      accept: 'application/json',
       'Content-Type': 'application/json',
       Authorization: `Bearer ${await getStudioAccessToken()}`,
     };

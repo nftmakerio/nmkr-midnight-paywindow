@@ -548,6 +548,7 @@ async function mint() {
         body: JSON.stringify({
           id: RESERVATION_ID,
           buyerUnshieldedAddress: unshieldedAddr,
+          recipients: paywindowInfo?.recipients ?? [],
           maxWaitMs: 120_000,
         }),
       });
