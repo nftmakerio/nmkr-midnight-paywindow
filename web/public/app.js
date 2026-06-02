@@ -494,42 +494,42 @@ async function mint() {
 
     setStep('start', 'done', '');
 
-    // Step 2: NIGHT transfer
+    // Step 2: NIGHT transfer via build / balance / submit. We DON'T use
+    // 1AM's api.makeTransfer here — that leaves a DAPP_MAKE_TRANSFER
+    // record stuck in Pending → Failed in the wallet history (1AM can't
+    // match the pre-balance hash to the on-chain Tx). Instead the server
+    // builds the unsealed Tx, the wallet balances it (adds inputs/dust/
+    // sigs) and submits, which produces exactly one
+    // DAPP_SUBMIT_TRANSACTION → Confirmed record.
     if (hasPayment) {
-      setStep('night', 'active', 'waiting for wallet approval …');
-      // Same call shape as the working dapp-demo Button 6.
-      const transferSpecs = recipients.map(r => ({
-        kind: 'unshielded',
-        type: NIGHT_TOKEN,
-        value: BigInt(r.amountRaw),
-        recipient: r.address,
-      }));
-      // Dump exactly what we'll pass to the wallet — so when 1AM throws
-      // an unhelpful error we can see whether it's our payload or theirs.
-      console.log('[paywindow] makeTransfer specs:',
-        transferSpecs.map(s => ({ ...s, value: s.value?.toString?.() })));
-      console.log('[paywindow] paywindowInfo.recipients:', paywindowInfo?.recipients);
-      if (transferSpecs.length === 0) {
+      console.log('[paywindow] night recipients:',
+        recipients.map(r => ({ address: r.address?.slice?.(0, 30) + '…', amountRaw: String(r.amountRaw) })));
+      if (recipients.length === 0) {
         throw new Error(
           `No NIGHT recipients to send to — paywindowInfo.recipients is ${JSON.stringify(paywindowInfo?.recipients)}. ` +
           `The bridge's /api/paywindow/:id response is missing the recipients field. ` +
           `Check that NMKR Studio's GetMidnightPaywindowDetails response includes 'recipients'.`,
         );
       }
-      let transferResult;
-      try {
-        transferResult = await withWallet(api => api.makeTransfer(transferSpecs));
-      } catch (err) {
-        console.error('[paywindow] makeTransfer failed', err, { transferSpecs });
-        throw err;
+
+      setStep('night', 'active', 'building unsealed tx on server …');
+      const builtNight = await fetchJson(`${API}/build-night-transfer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipients: recipients.map(r => ({ address: r.address, amountRaw: String(r.amountRaw) })),
+        }),
+      });
+
+      setStep('night', 'active', `tx ready (${builtNight.bytes} bytes) — waiting for wallet approval …`);
+      const balancedNight = await withWallet(api => api.balanceUnsealedTransaction(builtNight.unsealedTxHex));
+      const balancedNightHex = balancedNight?.tx ?? balancedNight?.transaction;
+      if (!balancedNightHex) {
+        throw new Error(`Wallet did not return a balanced NIGHT tx: keys=${Object.keys(balancedNight ?? {}).join(',')}`);
       }
-      const dappTxId = transferResult?.tx_id ?? transferResult?.txHash ?? null;
-      if (transferResult?.tx || transferResult?.transaction) {
-        // Wallet didn't auto-submit (rare) — submit ourselves
-        await withWallet(api => api.submitTransaction(transferResult.tx ?? transferResult.transaction));
-      }
-      setStep('night', 'done',
-        dappTxId ? `1AM record ${dappTxId.slice(0, 12)}… (the real Sent tx will appear in the explorer)` : 'submitted');
+      setStep('night', 'active', 'submitting NIGHT …');
+      await withWallet(api => api.submitTransaction(balancedNightHex));
+      setStep('night', 'done', 'submitted');
 
       // Step 3: Confirm on-chain via server polling
       setStep('confirm', 'active', 'scanning chain (up to 2 min)…');

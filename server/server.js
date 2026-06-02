@@ -567,11 +567,49 @@ app.post('/api/build-mint', async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+// 2b) Build an unsealed pure NIGHT-transfer tx. The browser feeds the
+// returned hex into 1AM's balanceUnsealedTransaction + submitTransaction
+// — same dance as the mint, just without a contract call. This replaces
+// the old 1AM `api.makeTransfer` path, which left a MAKE_TRANSFER record
+// stuck in Pending → Failed (different tx hashes pre/post balance, so
+// 1AM never matches the record to its on-chain Tx).
+app.post('/api/build-night-transfer', async (req, res) => {
+  try {
+    const { recipients } = req.body ?? {};
+    if (!Array.isArray(recipients) || recipients.length === 0) {
+      throw new HttpError(400, 'recipients[] is required');
+    }
+    for (const [i, r] of recipients.entries()) {
+      if (!r?.address || !r?.amountRaw) {
+        throw new HttpError(400, `recipients[${i}] requires address and amountRaw`);
+      }
+    }
+    const url = `${NMKR_API_URL}/api/transfer/build-unsealed-night`;
+    let r;
+    try {
+      r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipients }),
+      });
+    } catch (err) {
+      throw new HttpError(502, `cannot reach nmkr-midnight-api: ${err.message}`);
+    }
+    let body;
+    try { body = await readJsonOrThrow(r, 'nmkr-midnight-api /api/transfer/build-unsealed-night'); }
+    catch (err) { throw new HttpError(r.status || 502, err.message); }
+    if (!r.ok) {
+      throw new HttpError(r.status, body?.error ?? `nmkr-midnight-api HTTP ${r.status}`);
+    }
+    res.json(body);
+  } catch (err) { sendError(res, err); }
+});
+
 // 3) Wait for the NIGHT transfer to be observed on-chain. The browser
-// calls this after 1AM's makeTransfer so we can confirm the payment
-// arrived BEFORE asking it to submit the mint tx. Polls the
-// nmkr-midnight-api address-history endpoint and looks for a sent
-// (or self) tx with outputs to every paywindow recipient.
+// calls this after the NIGHT tx is submitted so we can confirm the
+// payment arrived BEFORE asking the wallet to submit the mint tx.
+// Polls the nmkr-midnight-api address-history endpoint and looks for
+// a sent (or self) tx with outputs to every paywindow recipient.
 app.post('/api/wait-for-night-tx', async (req, res) => {
   try {
     const { id, buyerUnshieldedAddress, recipients, sinceMs = 60_000, maxWaitMs = 120_000 } = req.body ?? {};
